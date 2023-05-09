@@ -119,3 +119,33 @@ def match_by_sha1(
     if response and response.get("count"):
         results = response["results"]
         return results
+
+
+def index_package(
+    package_url,
+    timeout=None,
+    api_url=PURLDB_API_URL,
+):
+    """Request the indexing of a Package by the PurlDB."""
+    data = {"purl": f"{package_url}"}
+    response = request_post(
+        url=f"{api_url}on_demand_queue/index_package/",
+        data=data,
+        timeout=timeout
+    )
+    if response:
+        status = response.get("status", "")
+        return status
+
+
+def index_project_packages(project):
+    """Request the indexing of all Packages of `project` by the PurlDB."""
+    packages = project.discoveredpackages.all()
+    for package in packages:
+        package_url = package.package_url
+        if not package_url:
+            continue
+        status = index_package(package_url)
+        if status and "successful" not in status:
+            message = f"Error encountered when submitting index request for package {package_url}: {status}"
+            project.add_error(message)
