@@ -46,6 +46,10 @@ class MatchFromScanCodeScans(LoadInventory, DeployToDevelop):
         return (
             cls.get_inputs,
             cls.build_inventory_from_scans,
+            cls.tag_codebase_resources,
             cls.fingerprint_codebase_directories,
             cls.match_purldb
         )
+
+    def tag_codebase_resources(self):
+        self.project.codebaseresources.update(tag='to')

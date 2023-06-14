@@ -531,7 +531,7 @@ def match_purldb_resources(project, extensions, matcher_func, logger=None):
     """
     to_resources = (
         project.codebaseresources.files()
-        # .to_codebase()
+        .to_codebase()
         .no_status()
         .has_value("sha1")
         .filter(extension__in=extensions)
@@ -648,9 +648,12 @@ def match_purldb_directories(project, virtual_codebase, logger=None):
         logger("Matching directories from to/ in PurlDB")
 
     matched_count = 0
-    vc_to_directory = virtual_codebase.get_resource("virtual_root/to")
-    for vc_resource in vc_to_directory.walk(virtual_codebase):
-        if vc_resource.is_file or vc_resource.status == flag.MATCHED_TO_PURLDB:
+    for vc_resource in virtual_codebase.walk(topdown=True):
+        if (
+            vc_resource.is_file
+            or vc_resource.status == flag.MATCHED_TO_PURLDB
+            or vc_resource.path == 'virtual_root'
+        ):
             continue
 
         split_vc_resource_path = vc_resource.path.split("virtual_root/")
