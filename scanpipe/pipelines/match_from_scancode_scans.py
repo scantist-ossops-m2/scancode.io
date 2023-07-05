@@ -39,7 +39,7 @@ class MatchFromScanCodeScans(LoadInventory, DeployToDevelop):
     """
 
     purldb_package_extensions = [".jar",]
-    purldb_resource_extensions = []
+    purldb_resource_extensions = [".class",]
 
     @classmethod
     def steps(cls):
