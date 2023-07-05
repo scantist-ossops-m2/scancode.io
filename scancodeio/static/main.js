@@ -93,6 +93,56 @@ function setupTabs() {
   });
 }
 
+// Menu
+
+function setupMenu() {
+  const $menuLinks = getAll('.menu a:not(.is-stateless)');
+
+  function activateMenuItem($menuItem) {
+    const activeLink = document.querySelector('.menu .is-active');
+    activeLink.classList.remove('is-active');
+    $menuItem.classList.add('is-active');
+  }
+
+  $menuLinks.forEach(function ($el) {
+    $el.addEventListener('click', function () {
+      activateMenuItem($el)
+    });
+  });
+}
+
+// Form
+
+// Dynamic size for the textarea
+function setupTextarea() {
+  const $dynamicTextareas = getAll('textarea.is-dynamic');
+
+  function setHeight($el) {
+    $el.style.height = "";
+    $el.style.height = $el.scrollHeight + 3 + "px";
+  }
+
+  $dynamicTextareas.forEach(function ($el) {
+    $el.oninput = () => { setHeight($el); }
+    $el.onfocus = () => { setHeight($el); }
+  });
+}
+
+// Highlights
+
+function setupHighlightControls() {
+    const $highlightShows = getAll(".is-more-show");
+
+    $highlightShows.forEach(function ($el) {
+      $el.addEventListener("click", function () {
+        let text = $el.querySelector("strong").textContent;
+        let newText = text === "Show all" ? "Hide" : "Show all";
+        $el.querySelector("strong").textContent = newText;
+        $el.parentNode.classList.toggle("is-more-clipped");
+      });
+    });
+  }
+
 // Utils, available globally
 
 function getAll(selector) {
@@ -158,6 +208,9 @@ document.addEventListener('DOMContentLoaded', function () {
   setupOpenModalButtons();
   setupCloseModalButtons();
   setupTabs();
+  setupMenu();
+  setupTextarea();
+  setupHighlightControls();
 
   // Close modals and dropdowns on pressing "escape" key
   document.addEventListener('keydown', function (event) {

@@ -47,6 +47,7 @@ from django.urls import reverse_lazy
 from django.views import generic
 from django.views.generic.detail import SingleObjectMixin
 from django.views.generic.edit import FormView
+from django.views.generic.edit import UpdateView
 
 import saneyaml
 import xlsxwriter
@@ -65,6 +66,7 @@ from scanpipe.forms import AddInputsForm
 from scanpipe.forms import AddPipelineForm
 from scanpipe.forms import ArchiveProjectForm
 from scanpipe.forms import ProjectForm
+from scanpipe.forms import ProjectSettingsForm
 from scanpipe.models import CodebaseResource
 from scanpipe.models import DiscoveredDependency
 from scanpipe.models import DiscoveredPackage
@@ -165,15 +167,27 @@ class PrefetchRelatedViewMixin:
         return super().get_queryset().prefetch_related(*self.prefetch_related)
 
 
-class ProjectViewMixin:
-    model = Project
-    slug_url_kwarg = "uuid"
-    slug_field = "uuid"
-
-
 def render_as_yaml(value):
     if value:
         return saneyaml.dump(value, indent=2)
+
+
+DISPLAYABLE_IMAGE_MIME_TYPE = [
+    "image/apng",
+    "image/avif",
+    "image/bmp",
+    "image/gif",
+    "image/jpeg",
+    "image/png",
+    "image/svg+xml",
+    "image/webp",
+    "image/x-icon",
+]
+
+
+def is_displayable_image_type(resource):
+    """Return True if the ``resource`` file is supported by the HTML <img> tag."""
+    return resource.mime_type and resource.mime_type in DISPLAYABLE_IMAGE_MIME_TYPE
 
 
 class TabSetMixin:
@@ -191,6 +205,7 @@ class TabSetMixin:
             ]
             "template": "",
             "icon_class": "",
+            "condition": <func>,
         }
     }
     """
@@ -202,6 +217,10 @@ class TabSetMixin:
         tabset_data = {}
 
         for label, tab_definition in self.tabset.items():
+            if condition := tab_definition.get("condition"):
+                if not condition(self.object):
+                    continue
+
             tab_data = {
                 "verbose_name": tab_definition.get("verbose_name"),
                 "icon_class": tab_definition.get("icon_class"),
@@ -243,7 +262,8 @@ class TabSetMixin:
             return render_func(field_value)
 
         if isinstance(field_value, list):
-            field_value = "\n".join(field_value)
+            with suppress(TypeError):
+                field_value = "\n".join(field_value)
 
         return field_value
 
@@ -304,16 +324,20 @@ class TableColumnsMixin:
 
             sort_name = column_data.get("sort_name") or field_name
             if sort_name in sortable_fields:
+                is_sorted = sort_name == active_sort.lstrip("-")
+
                 sort_direction = ""
+                if is_sorted and not active_sort.startswith("-"):
+                    sort_direction = "-"
 
-                if active_sort.endswith(sort_name):
-                    if not active_sort.startswith("-"):
-                        sort_direction = "-"
-
+                column_data["is_sorted"] = is_sorted
                 column_data["sort_direction"] = sort_direction
                 query_dict = self.request.GET.copy()
                 query_dict["sort"] = f"{sort_direction}{sort_name}"
                 column_data["sort_query"] = query_dict.urlencode()
+
+            if filter_fieldname := column_data.get("filter_fieldname"):
+                column_data["filter"] = filterset.form[filter_fieldname]
 
             columns_data.append(column_data)
 
@@ -327,6 +351,7 @@ class TableColumnsMixin:
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         context["columns_data"] = self.get_columns_data()
+        context["request_query_string"] = self.request.GET.urlencode()
         return context
 
 
@@ -475,10 +500,11 @@ class ProjectCreateView(ConditionalLoginRequired, generic.CreateView):
         return response
 
     def get_success_url(self):
-        return reverse_lazy("project_detail", kwargs={"uuid": self.object.pk})
+        return self.object.get_absolute_url()
 
 
-class ProjectDetailView(ConditionalLoginRequired, ProjectViewMixin, generic.DetailView):
+class ProjectDetailView(ConditionalLoginRequired, generic.DetailView):
+    model = Project
     template_name = "scanpipe/project_detail.html"
 
     @staticmethod
@@ -559,9 +585,9 @@ class ProjectDetailView(ConditionalLoginRequired, ProjectViewMixin, generic.Deta
 
         codebase_root = sorted(
             project.codebase_path.glob("*"),
-            key=operator.methodcaller("is_dir"),
-            reverse=True,
+            key=operator.attrgetter("name"),
         )
+        codebase_root.sort(key=operator.methodcaller("is_file"))
 
         resource_status_summary = count_group_by(project.codebaseresources, "status")
 
@@ -579,6 +605,7 @@ class ProjectDetailView(ConditionalLoginRequired, ProjectViewMixin, generic.Deta
                 "scan_summary": scan_summary,
                 "pipeline_runs": pipeline_runs,
                 "codebase_root": codebase_root,
+                "file_filter": self.request.GET.get("file-filter", "all"),
             }
         )
 
@@ -610,7 +637,41 @@ class ProjectDetailView(ConditionalLoginRequired, ProjectViewMixin, generic.Deta
         return redirect(project)
 
 
-class ProjectChartsView(ConditionalLoginRequired, ProjectViewMixin, generic.DetailView):
+class ProjectSettingsView(ConditionalLoginRequired, UpdateView):
+    model = Project
+    template_name = "scanpipe/project_settings.html"
+
+    form_class = ProjectSettingsForm
+    success_message = 'The project "{}" settings have been updated.'
+
+    def form_valid(self, form):
+        response = super().form_valid(form)
+        project = self.get_object()
+        messages.success(self.request, self.success_message.format(project))
+        return response
+
+    def get(self, request, *args, **kwargs):
+        if request.GET.get("download"):
+            return self.download_config_file(project=self.get_object())
+        return super().get(request, *args, **kwargs)
+
+    @staticmethod
+    def download_config_file(project):
+        """
+        Download the ``scancode-config.yml`` config file generated from the current
+        project settings.
+        """
+        response = FileResponse(
+            streaming_content=project.get_settings_as_yml(),
+            content_type="application/x-yaml",
+        )
+        filename = output.safe_filename(settings.SCANCODEIO_CONFIG_FILE)
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
+
+
+class ProjectChartsView(ConditionalLoginRequired, generic.DetailView):
+    model = Project
     template_name = "scanpipe/project_charts.html"
 
     @staticmethod
@@ -637,7 +698,7 @@ class ProjectChartsView(ConditionalLoginRequired, ProjectViewMixin, generic.Deta
         context = super().get_context_data(**kwargs)
         project = self.object
 
-        file_filter = self.request.GET.get("file-filter")
+        file_filter = self.request.GET.get("file-filter", "all")
         context["file_filter"] = file_filter
 
         files = project.codebaseresources.files()
@@ -689,11 +750,8 @@ class ProjectChartsView(ConditionalLoginRequired, ProjectViewMixin, generic.Deta
         return context
 
 
-class ProjectCodebaseView(
-    ConditionalLoginRequired,
-    ProjectViewMixin,
-    generic.DetailView,
-):
+class ProjectCodebaseView(ConditionalLoginRequired, generic.DetailView):
+    model = Project
     template_name = "scanpipe/includes/project_codebase.html"
 
     @staticmethod
@@ -729,7 +787,7 @@ class ProjectCodebaseView(
                 get_node(name="..", is_dir=True, location=str(Path(current_dir).parent))
             )
 
-        for resources, is_dir in [(directories, True), (files, False)]:
+        for resources, is_dir in [(sorted(directories), True), (sorted(files), False)]:
             tree.extend(
                 get_node(name=name, is_dir=is_dir, location=f"{current_dir}/{name}")
                 for name in resources
@@ -753,9 +811,8 @@ class ProjectCodebaseView(
         return context
 
 
-class ProjectArchiveView(
-    ConditionalLoginRequired, ProjectViewMixin, SingleObjectMixin, FormView
-):
+class ProjectArchiveView(ConditionalLoginRequired, SingleObjectMixin, FormView):
+    model = Project
     http_method_names = ["post"]
     form_class = ArchiveProjectForm
     success_url = reverse_lazy("project_list")
@@ -779,7 +836,8 @@ class ProjectArchiveView(
         return response
 
 
-class ProjectDeleteView(ConditionalLoginRequired, ProjectViewMixin, generic.DeleteView):
+class ProjectDeleteView(ConditionalLoginRequired, generic.DeleteView):
+    model = Project
     success_url = reverse_lazy("project_list")
     success_message = 'The project "{}" and all its related data have been removed.'
 
@@ -795,7 +853,8 @@ class ProjectDeleteView(ConditionalLoginRequired, ProjectViewMixin, generic.Dele
         return response_redirect
 
 
-class ProjectResetView(ConditionalLoginRequired, ProjectViewMixin, generic.DeleteView):
+class ProjectResetView(ConditionalLoginRequired, generic.DeleteView):
+    model = Project
     success_message = 'All data, except inputs, for the "{}" project have been removed.'
 
     def form_valid(self, form):
@@ -812,8 +871,8 @@ class ProjectResetView(ConditionalLoginRequired, ProjectViewMixin, generic.Delet
 
 
 @conditional_login_required
-def execute_pipeline_view(request, uuid, run_uuid):
-    project = get_object_or_404(Project, uuid=uuid)
+def execute_pipeline_view(request, slug, run_uuid):
+    project = get_object_or_404(Project, slug=slug)
     run = get_object_or_404(Run, uuid=run_uuid, project=project)
 
     if run.status != run.Status.NOT_STARTED:
@@ -825,8 +884,8 @@ def execute_pipeline_view(request, uuid, run_uuid):
 
 
 @conditional_login_required
-def stop_pipeline_view(request, uuid, run_uuid):
-    project = get_object_or_404(Project, uuid=uuid)
+def stop_pipeline_view(request, slug, run_uuid):
+    project = get_object_or_404(Project, slug=slug)
     run = get_object_or_404(Run, uuid=run_uuid, project=project)
 
     if run.status != run.Status.RUNNING:
@@ -838,8 +897,8 @@ def stop_pipeline_view(request, uuid, run_uuid):
 
 
 @conditional_login_required
-def delete_pipeline_view(request, uuid, run_uuid):
-    project = get_object_or_404(Project, uuid=uuid)
+def delete_pipeline_view(request, slug, run_uuid):
+    project = get_object_or_404(Project, slug=slug)
     run = get_object_or_404(Run, uuid=run_uuid, project=project)
 
     if run.status not in [run.Status.NOT_STARTED, run.Status.QUEUED]:
@@ -871,9 +930,9 @@ def project_results_json_response(project, as_attachment=False):
     return response
 
 
-class ProjectResultsView(
-    ConditionalLoginRequired, ProjectViewMixin, generic.DetailView
-):
+class ProjectResultsView(ConditionalLoginRequired, generic.DetailView):
+    model = Project
+
     def get(self, request, *args, **kwargs):
         self.object = self.get_object()
         project = self.object
@@ -906,12 +965,13 @@ class ProjectRelatedViewMixin:
 
     def get_project(self):
         if not getattr(self, "project", None):
-            project_uuid = self.kwargs["uuid"]
-            self.project = get_object_or_404(Project, uuid=project_uuid)
+            self.project = get_object_or_404(Project, slug=self.kwargs["slug"])
         return self.project
 
     def get_queryset(self):
-        return super().get_queryset().project(self.get_project())
+        return (
+            super().get_queryset().select_related("project").project(self.get_project())
+        )
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
@@ -935,20 +995,35 @@ class CodebaseResourceListView(
     prefetch_related = ["discovered_packages"]
     table_columns = [
         "path",
-        "status",
-        "type",
+        {
+            "field_name": "status",
+            "filter_fieldname": "status",
+        },
+        {
+            "field_name": "type",
+            "filter_fieldname": "type",
+        },
         "size",
         "name",
         "extension",
         "programming_language",
         "mime_type",
         "tag",
-        "detected_license_expression",
+        {
+            "field_name": "detected_license_expression",
+            "filter_fieldname": "detected_license_expression",
+        },
         {
             "field_name": "compliance_alert",
             "condition": scanpipe_app.policies_enabled,
+            "filter_fieldname": "compliance_alert",
+            "filter_is_right": True,
         },
-        "packages",
+        {
+            "field_name": "packages",
+            "filter_fieldname": "in_package",
+            "filter_is_right": True,
+        },
     ]
 
     def get_context_data(self, **kwargs):
@@ -971,9 +1046,18 @@ class DiscoveredPackageListView(
     paginate_by = settings.SCANCODEIO_PAGINATE_BY.get("package", 100)
     prefetch_related = ["codebase_resources"]
     table_columns = [
-        "package_url",
-        "declared_license_expression",
-        "copyright",
+        {
+            "field_name": "package_url",
+            "filter_fieldname": "is_vulnerable",
+        },
+        {
+            "field_name": "declared_license_expression",
+            "filter_fieldname": "declared_license_expression",
+        },
+        {
+            "field_name": "copyright",
+            "filter_fieldname": "copyright",
+        },
         "primary_language",
         "resources",
     ]
@@ -1034,6 +1118,7 @@ RelationRow = namedtuple(
 class CodebaseRelationListView(
     ConditionalLoginRequired,
     ProjectRelatedViewMixin,
+    TableColumnsMixin,
     ExportXLSXMixin,
     PaginatedFilterView,
 ):
@@ -1041,6 +1126,25 @@ class CodebaseRelationListView(
     filterset_class = ResourceFilterSet
     template_name = "scanpipe/relation_list.html"
     paginate_by = settings.SCANCODEIO_PAGINATE_BY.get("relation", 100)
+    table_columns = [
+        {
+            "field_name": "path",
+            "label": "To resource",
+        },
+        {
+            "field_name": "status",
+            "filter_fieldname": "status",
+        },
+        {
+            "field_name": "related_from__map_type",
+            "label": "Map type",
+            "filter_fieldname": "relation_map_type",
+        },
+        {
+            "field_name": "related_from__from_resource__path",
+            "label": "From resource",
+        },
+    ]
 
     def get_queryset(self):
         return (
@@ -1048,7 +1152,7 @@ class CodebaseRelationListView(
             .get_queryset()
             .files()
             .to_codebase()
-            .prefetch_related("related_from__from_resource")
+            .prefetch_related("related_from__from_resource__project")
         )
 
     def get_context_data(self, **kwargs):
@@ -1132,6 +1236,11 @@ class CodebaseResourceDetailsView(
             "icon_class": "fa-solid fa-file-code",
             "template": "scanpipe/tabset/tab_content_viewer.html",
         },
+        "image": {
+            "icon_class": "fa-solid fa-image",
+            "template": "scanpipe/tabset/tab_image.html",
+            "condition": is_displayable_image_type,
+        },
         "detection": {
             "fields": [
                 "detected_license_expression",
@@ -1174,7 +1283,7 @@ class CodebaseResourceDetailsView(
             "fields": [
                 {"field_name": "extra_data", "render_func": render_as_yaml},
             ],
-            "verbose_name": "Extra data",
+            "verbose_name": "Extra",
             "icon_class": "fa-solid fa-database",
         },
     }
@@ -1239,8 +1348,8 @@ class CodebaseResourceDetailsView(
 
 
 @conditional_login_required
-def codebase_resource_diff_view(request, uuid):
-    project = get_object_or_404(Project, uuid=uuid)
+def codebase_resource_diff_view(request, slug):
+    project = get_object_or_404(Project, slug=slug)
 
     project_files = project.codebaseresources.files()
     from_path = request.GET.get("from_path")
@@ -1267,6 +1376,8 @@ class DiscoveredPackageDetailsView(
 ):
     model = DiscoveredPackage
     model_label = "packages"
+    slug_field = "uuid"
+    slug_url_kwarg = "uuid"
     template_name = "scanpipe/package_detail.html"
     prefetch_related = ["codebase_resources"]
     tabset = {
@@ -1327,6 +1438,11 @@ class DiscoveredPackageDetailsView(
             "icon_class": "fa-solid fa-layer-group",
             "template": "scanpipe/tabset/tab_dependencies.html",
         },
+        "vulnerabilities": {
+            "fields": ["affected_by_vulnerabilities"],
+            "icon_class": "fa-solid fa-bug",
+            "template": "scanpipe/tabset/tab_vulnerabilities.html",
+        },
         "others": {
             "fields": [
                 {"field_name": "size", "render_func": filesizeformat},
@@ -1348,10 +1464,15 @@ class DiscoveredPackageDetailsView(
             "fields": [
                 {"field_name": "extra_data", "render_func": render_as_yaml},
             ],
-            "verbose_name": "Extra data",
+            "verbose_name": "Extra",
             "icon_class": "fa-solid fa-database",
         },
     }
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["vulnerablecode_url"] = settings.VULNERABLECODE_URL
+        return context
 
 
 class DiscoveredDependencyDetailsView(
@@ -1363,6 +1484,8 @@ class DiscoveredDependencyDetailsView(
 ):
     model = DiscoveredDependency
     model_label = "dependencies"
+    slug_field = "dependency_uid"
+    slug_url_kwarg = "dependency_uid"
     template_name = "scanpipe/dependency_detail.html"
     prefetch_related = ["for_package", "datafile_resource"]
     tabset = {

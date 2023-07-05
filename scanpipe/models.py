@@ -62,6 +62,7 @@ from django.utils.translation import gettext_lazy as _
 import django_rq
 import redis
 import requests
+import saneyaml
 from commoncode.fileutils import parent_directory
 from commoncode.hash import multi_checksums
 from cyclonedx import model as cyclonedx_model
@@ -415,6 +416,14 @@ class ExtraDataFieldMixin(models.Model):
         abstract = True
 
 
+def get_project_slug(project):
+    """
+    Return a "slug" value for the provided ``project`` based on the slugify name
+    attribute combined with the ``short_uuid`` to ensure its uniqueness.
+    """
+    return f"{slugify(project.name)}-{project.short_uuid}"
+
+
 def get_project_work_directory(project):
     """
     Return the work directory location for a given `project`.
@@ -423,7 +432,7 @@ def get_project_work_directory(project):
     A short version of the `project` uuid is added as a suffix to ensure
     uniqueness of the work directory location.
     """
-    project_workspace_id = f"{slugify(project.name)}-{project.short_uuid}"
+    project_workspace_id = get_project_slug(project)
     return f"{scanpipe_app.workspace_path}/projects/{project_workspace_id}"
 
 
@@ -467,6 +476,10 @@ class Project(UUIDPKModel, ExtraDataFieldMixin, models.Model):
         max_length=100,
         help_text=_("Name for this project."),
     )
+    slug = models.SlugField(
+        unique=True,
+        max_length=110,  # enough for name.max_length + len(short_uuid)
+    )
     WORK_DIRECTORIES = ["input", "output", "codebase", "tmp"]
     work_directory = models.CharField(
         max_length=2048,
@@ -483,6 +496,8 @@ class Project(UUIDPKModel, ExtraDataFieldMixin, models.Model):
             "happened during the archive operation."
         ),
     )
+    notes = models.TextField(blank=True)
+    settings = models.JSONField(default=dict, blank=True)
 
     objects = ProjectQuerySet.as_manager()
 
@@ -502,9 +517,13 @@ class Project(UUIDPKModel, ExtraDataFieldMixin, models.Model):
         Save this project instance.
         The workspace directories are set up during project creation.
         """
+        if not self.slug:
+            self.slug = get_project_slug(project=self)
+
         if not self.work_directory:
             self.work_directory = get_project_work_directory(project=self)
             self.setup_work_directory()
+
         super().save(*args, **kwargs)
 
     def archive(self, remove_input=False, remove_codebase=False, remove_output=False):
@@ -645,10 +664,48 @@ class Project(UUIDPKModel, ExtraDataFieldMixin, models.Model):
         return Path(self.work_path / "tmp")
 
     def get_codebase_config_directory(self):
-        """Return the `.scancode` directory if available in the `codebase` directory."""
+        """
+        Return the ``.scancode`` config directory if available in the `codebase`
+        directory.
+        """
         config_directory = self.codebase_path / settings.SCANCODEIO_CONFIG_DIR
         if config_directory.exists():
             return config_directory
+
+    def get_input_config_file(self):
+        """
+        Return the ``scancode-config.yml`` file from the input/ directory if
+        available.
+        """
+        config_file = self.input_path / settings.SCANCODEIO_CONFIG_FILE
+        if config_file.exists():
+            return config_file
+
+    def get_settings_as_yml(self):
+        """Return the ``settings`` file content as yml, suitable for a config file."""
+        return saneyaml.dump(self.settings)
+
+    def get_env(self, field_name=None):
+        """
+        Return the project environment loaded from the ``.scancode/config.yml`` config
+        file, when available, and overriden by the ``settings`` model field.
+
+        ``field_name`` can be provided to get a single entry from the env.
+        """
+        env = {}
+
+        # 1. Load settings from config file when available.
+        if config_file := self.get_input_config_file():
+            with suppress(saneyaml.YAMLError):
+                env = saneyaml.load(config_file.read_text())
+
+        # 2. Update with values from the Project ``settings`` field.
+        env.update(self.settings)
+
+        if field_name:
+            return env.get(field_name)
+
+        return env
 
     def clear_tmp_directory(self):
         """
@@ -900,7 +957,7 @@ class Project(UUIDPKModel, ExtraDataFieldMixin, models.Model):
 
     def get_absolute_url(self):
         """Return this project's details URL."""
-        return reverse("project_detail", args=[self.uuid])
+        return reverse("project_detail", args=[self.slug])
 
     @cached_property
     def resource_count(self):
@@ -932,6 +989,11 @@ class Project(UUIDPKModel, ExtraDataFieldMixin, models.Model):
     def package_count(self):
         """Return the number of packages related to this project."""
         return self.discoveredpackages.count()
+
+    @cached_property
+    def vulnerable_package_count(self):
+        """Return the number of vulnerable packages related to this project."""
+        return self.discoveredpackages.vulnerable().count()
 
     @cached_property
     def dependency_count(self):
@@ -1419,6 +1481,18 @@ class Run(UUIDPKModel, ProjectRelatedModel, AbstractTaskFieldsModel):
                 print(output_str)
 
 
+def posix_regex_to_django_regex_lookup(regex_pattern):
+    """
+    Convert a POSIX-style regex pattern to an equivalent pattern compatible with the
+    Django regex lookup.
+    """
+    escaped_pattern = re.escape(regex_pattern)
+    escaped_pattern = escaped_pattern.replace(r"\*", ".*")  # Replace \* with .*
+    escaped_pattern = escaped_pattern.replace(r"\?", ".")  # Replace \? with .
+    escaped_pattern = f"^{escaped_pattern}$"  # Add start and end anchors
+    return escaped_pattern
+
+
 class CodebaseResourceQuerySet(ProjectRelatedQuerySet):
     def prefetch_for_serializer(self):
         """
@@ -1511,6 +1585,10 @@ class CodebaseResourceQuerySet(ProjectRelatedQuerySet):
         field.
         """
         return self.filter(~Q(extra_data__directory_content=""))
+
+    def path_pattern(self, pattern):
+        """Resources with a path that match the provided ``pattern``."""
+        return self.filter(path__regex=posix_regex_to_django_regex_lookup(pattern))
 
 
 class ScanFieldsModelMixin(models.Model):
@@ -1797,9 +1875,11 @@ class CodebaseResource(
         with the commoncode.resource.Codebase class API.
         """
         if scanpipe_app.policies_enabled:
-            loaded_license_expression = getattr(self, "_loaded_license_expression", [])
+            loaded_license_expression = getattr(self, "_loaded_license_expression", "")
             if self.detected_license_expression != loaded_license_expression:
                 self.compliance_alert = self.compute_compliance_alert()
+                if "update_fields" in kwargs:
+                    kwargs["update_fields"].append("compliance_alert")
 
         super().save(*args, **kwargs)
 
@@ -1835,11 +1915,12 @@ class CodebaseResource(
         Return a list of path segment name along its subpath for this resource.
 
         Such as::
-        [
-            ('root', 'root'),
-            ('subpath', 'root/subpath'),
-            ('file.txt', 'root/subpath/file.txt'),
-        ]
+
+            [
+                ('root', 'root'),
+                ('subpath', 'root/subpath'),
+                ('file.txt', 'root/subpath/file.txt'),
+            ]
         """
         current_path = ""
         part_and_subpath = []
@@ -1967,11 +2048,11 @@ class CodebaseResource(
                 yield child
 
     def get_absolute_url(self):
-        return reverse("resource_detail", args=[self.project_id, self.path])
+        return reverse("resource_detail", args=[self.project.slug, self.path])
 
     def get_raw_url(self):
         """Return the URL to access the RAW content of the resource."""
-        return reverse("resource_raw", args=[self.project_id, self.path])
+        return reverse("resource_raw", args=[self.project.slug, self.path])
 
     @property
     def file_content(self):
@@ -2135,7 +2216,8 @@ class CodebaseRelation(
 
 
 class DiscoveredPackageQuerySet(PackageURLQuerySetMixin, ProjectRelatedQuerySet):
-    pass
+    def vulnerable(self):
+        return self.filter(~Q(affected_by_vulnerabilities__in=EMPTY_VALUES))
 
 
 class AbstractPackage(models.Model):
@@ -2334,6 +2416,20 @@ class AbstractPackage(models.Model):
         abstract = True
 
 
+class VulnerabilityMixin(models.Model):
+    """Add the vulnerability related fields and methods."""
+
+    affected_by_vulnerabilities = models.JSONField(blank=True, default=list)
+
+    @property
+    def is_vulnerable(self):
+        """Returns True if this instance is affected by vulnerabilities."""
+        return bool(self.affected_by_vulnerabilities)
+
+    class Meta:
+        abstract = True
+
+
 class DiscoveredPackage(
     ProjectRelatedModel,
     ExtraDataFieldMixin,
@@ -2341,6 +2437,7 @@ class DiscoveredPackage(
     UpdateFromDataMixin,
     HashFieldsMixin,
     PackageURLMixin,
+    VulnerabilityMixin,
     AbstractPackage,
 ):
     """
@@ -2399,7 +2496,7 @@ class DiscoveredPackage(
         return self.package_url or str(self.uuid)
 
     def get_absolute_url(self):
-        return reverse("package_detail", args=[self.project_id, self.pk])
+        return reverse("package_detail", args=[self.project.slug, self.uuid])
 
     @cached_property
     def resources(self):
@@ -2578,6 +2675,7 @@ class DiscoveredPackage(
             "primary_language",
             "download_url",
             "homepage_url",
+            "notice_text",
         ]
         properties = [
             cyclonedx_model.Property(
@@ -2718,7 +2816,9 @@ class DiscoveredDependency(
         return self.dependency_uid
 
     def get_absolute_url(self):
-        return reverse("dependency_detail", args=[self.project_id, self.pk])
+        return reverse(
+            "dependency_detail", args=[self.project.slug, self.dependency_uid]
+        )
 
     @property
     def purl(self):

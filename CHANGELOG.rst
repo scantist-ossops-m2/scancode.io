@@ -1,7 +1,49 @@
 Changelog
 =========
 
-v33.0.0 (unreleased)
+v32.4.0 (unreleased)
+--------------------
+
+- Upgrade vulnerablecode integration:
+  - Add ``affected_by_vulnerabilities`` field on ``DiscoveredPackage`` model.
+  - Add UI for showing package vulnerabilities in details view.
+  - Add packages filtering by ``is_vulnerable``.
+  - Include vulnerability data in the JSON results.
+  https://github.com/nexB/scancode.io/issues/600
+
+- Add multiple new filtering option to list views table headers.
+  Refactored the way to define filters using the table_columns view attribute.
+  https://github.com/nexB/scancode.io/issues/216
+  https://github.com/nexB/scancode.io/issues/580
+  https://github.com/nexB/scancode.io/issues/506
+
+- Update the CycloneDX BOM download file extension from ``.bom.json`` to ``.cdx.json``.
+  https://github.com/nexB/scancode.io/issues/785
+
+- SPDX download BOM do not include codebase resource files by default anymore.
+  https://github.com/nexB/scancode.io/issues/785
+
+- Add archive_location to the LAYERS worksheet of XLSX output.
+  https://github.com/nexB/scancode.io/issues/773
+
+- Add "New Project" button to Project details view.
+  https://github.com/nexB/scancode.io/issues/763
+
+- Display image type files in the codebase resource details view in a new "Image" tab.
+
+- Add ``slug`` field on the Project model. That field is used in URLs instead of the
+  ``uuid``.
+  https://github.com/nexB/scancode.io/issues/745
+
+- Fix the ordering of the Codebase panel in the Project details view.
+  https://github.com/nexB/scancode.io/issues/795
+
+- Do not rely on the internal ``id`` PK for package and dependency details URLs.
+  Package details URL is now based on ``uuid`` and the dependency details URL is based
+  on ``dependency_uid``.
+  https://github.com/nexB/scancode.io/issues/331
+
+v32.3.0 (2023-06-12)
 --------------------
 
 - Upgrade ScanCode-toolkit to latest v32.0.x
@@ -19,6 +61,23 @@ v33.0.0 (unreleased)
   1. "from-[FILENAME]" archive containing the development source code
   2. "to-[FILENAME]" archive containing the deployment compiled code
   https://github.com/nexB/scancode.io/issues/659
+
+- Add ability to configure a Project through a new "Settings" form in the UI or by
+  providing a ".scancode-config.yml" configuration file as one of the Project inputs.
+  The "Settings" form allows to rename a Project, add and edit the notes, as well
+  as providing a list of patterns to be ignored during pipeline runs, the choice of
+  extracting archives recursively, and the ability to provide a custom template for
+  attribution.
+  https://github.com/nexB/scancode.io/issues/685
+  https://github.com/nexB/scancode.io/issues/764
+
+- Add ``notes`` field on the Project model. Notes can be updated from the Project
+  settings form. Also, notes can be provided while creating a project through the CLI
+  using the a new ``--notes`` option.
+  https://github.com/nexB/scancode.io/issues/709
+
+- Add a mapper function to relate .ABOUT files during the d2d pipeline.
+  https://github.com/nexB/scancode.io/issues/740
 
 - Enhance the file viewer UI of the resource details view.
   A new search for the file content was added.
@@ -44,6 +103,9 @@ v33.0.0 (unreleased)
 
 - Add support for unknown licenses in attribution output.
   https://github.com/nexB/scancode.io/issues/749
+
+- Add ``License`` objects to each of the package for attribution generation.
+  https://github.com/nexB/scancode.io/issues/775
 
 - The "Codebase" panel can now be used to browse the Project's codebase/ directory
   and open related resources details view.

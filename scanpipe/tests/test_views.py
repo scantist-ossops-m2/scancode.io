@@ -32,10 +32,12 @@ from django.test import override_settings
 from django.urls import reverse
 
 from scanpipe.models import CodebaseResource
+from scanpipe.models import DiscoveredPackage
 from scanpipe.models import Project
 from scanpipe.pipes import make_relation
 from scanpipe.pipes.input import copy_inputs
 from scanpipe.tests import make_resource_file
+from scanpipe.tests import package_data1
 from scanpipe.views import ProjectCodebaseView
 from scanpipe.views import ProjectDetailView
 
@@ -138,8 +140,8 @@ class ScanPipeViewsTest(TestCase):
         data = {"page": "2"}
         response = self.client.get(url, data=data)
 
-        expected = '<a class="is-black-link" href="?page=2&amp;sort=name">Name</a>'
-        self.assertContains(response, expected)
+        expected = '<a href="?page=2&amp;sort=name" class="is-black-link">Name</a>'
+        self.assertContains(response, expected, html=True)
         expected = '<li><a href="?status=" class="dropdown-item is-active">All</a></li>'
         self.assertContains(response, expected)
         expected = '<a href="?pipeline=" class="dropdown-item is-active">All</a>'
@@ -150,16 +152,13 @@ class ScanPipeViewsTest(TestCase):
     def test_scanpipe_views_project_details_is_archived(self):
         url = self.project1.get_absolute_url()
         expected1 = "WARNING: This project is archived and read-only."
-        expected2 = 'id="modal-archive"'
 
         response = self.client.get(url)
         self.assertNotContains(response, expected1)
-        self.assertContains(response, expected2)
 
         self.project1.archive()
         response = self.client.get(url)
         self.assertContains(response, expected1)
-        self.assertNotContains(response, expected2)
 
     @mock.patch("requests.get")
     def test_scanpipe_views_project_details_add_inputs(self, mock_get):
@@ -215,7 +214,7 @@ class ScanPipeViewsTest(TestCase):
         self.assertIsNone(run.task_start_date)
 
     def test_scanpipe_views_project_details_charts_view(self):
-        url = reverse("project_charts", args=[self.project1.uuid])
+        url = reverse("project_charts", args=[self.project1.slug])
 
         with self.assertNumQueries(9):
             response = self.client.get(url)
@@ -235,7 +234,7 @@ class ScanPipeViewsTest(TestCase):
         self.assertContains(response, '{"Python": 1}')
 
     def test_scanpipe_views_project_details_charts_compliance_alert(self):
-        url = reverse("project_charts", args=[self.project1.uuid])
+        url = reverse("project_charts", args=[self.project1.slug])
         expected = 'id="compliance_alert_chart"'
 
         response = self.client.get(url)
@@ -316,8 +315,22 @@ class ScanPipeViewsTest(TestCase):
         ]
         self.assertEqual(expected, list(scan_summary_data.keys()))
 
+    def test_scanpipe_views_project_details_codebase_root(self):
+        (self.project1.codebase_path / "z.txt").touch()
+        (self.project1.codebase_path / "a.txt").touch()
+        (self.project1.codebase_path / "z").mkdir()
+        (self.project1.codebase_path / "a").mkdir()
+        (self.project1.codebase_path / "Zdir").mkdir()
+        (self.project1.codebase_path / "Dir").mkdir()
+
+        url = self.project1.get_absolute_url()
+        response = self.client.get(url)
+        codebase_root = response.context_data["codebase_root"]
+        expected = ["Dir", "Zdir", "a", "z", "a.txt", "z.txt"]
+        self.assertEqual(expected, [path.name for path in codebase_root])
+
     def test_scanpipe_views_project_codebase_view(self):
-        url = reverse("project_codebase", args=[self.project1.uuid])
+        url = reverse("project_codebase", args=[self.project1.slug])
 
         (self.project1.codebase_path / "dir1").mkdir()
         (self.project1.codebase_path / "dir1/dir2").mkdir()
@@ -340,6 +353,20 @@ class ScanPipeViewsTest(TestCase):
         data = {"current_dir": "../"}
         response = self.client.get(url, data=data)
         self.assertEqual(404, response.status_code)
+
+    def test_scanpipe_views_project_codebase_view_ordering(self):
+        url = reverse("project_codebase", args=[self.project1.slug])
+        (self.project1.codebase_path / "z.txt").touch()
+        (self.project1.codebase_path / "a.txt").touch()
+        (self.project1.codebase_path / "z").mkdir()
+        (self.project1.codebase_path / "a").mkdir()
+        (self.project1.codebase_path / "Zdir").mkdir()
+        (self.project1.codebase_path / "Dir").mkdir()
+
+        response = self.client.get(url)
+        codebase_tree = response.context_data["codebase_tree"]
+        expected = ["Dir", "Zdir", "a", "z", "a.txt", "z.txt"]
+        self.assertEqual(expected, [path.get("name") for path in codebase_tree])
 
     def test_scanpipe_views_project_codebase_view_get_tree(self):
         get_tree = ProjectCodebaseView.get_tree
@@ -380,7 +407,7 @@ class ScanPipeViewsTest(TestCase):
             get_tree(self.project1, current_dir="")
 
     def test_scanpipe_views_project_archive_view(self):
-        url = reverse("project_archive", args=[self.project1.uuid])
+        url = reverse("project_archive", args=[self.project1.slug])
         run = self.project1.add_pipeline("docker")
         run.set_task_started(run.pk)
 
@@ -399,7 +426,7 @@ class ScanPipeViewsTest(TestCase):
         self.assertTrue(self.project1.is_archived)
 
     def test_scanpipe_views_project_delete_view(self):
-        url = reverse("project_delete", args=[self.project1.uuid])
+        url = reverse("project_delete", args=[self.project1.slug])
         run = self.project1.add_pipeline("docker")
         run.set_task_started(run.pk)
 
@@ -417,7 +444,7 @@ class ScanPipeViewsTest(TestCase):
         self.assertFalse(Project.objects.filter(name=self.project1.name).exists())
 
     def test_scanpipe_views_project_reset_view(self):
-        url = reverse("project_reset", args=[self.project1.uuid])
+        url = reverse("project_reset", args=[self.project1.slug])
         run = self.project1.add_pipeline("docker")
         run.set_task_started(run.pk)
 
@@ -434,10 +461,44 @@ class ScanPipeViewsTest(TestCase):
         self.assertContains(response, expected)
         self.assertTrue(Project.objects.filter(name=self.project1.name).exists())
 
+    def test_scanpipe_views_project_settings_view(self):
+        url = reverse("project_settings", args=[self.project1.slug])
+        response = self.client.get(url)
+        expected_ids = [
+            "id_name",
+            "id_notes",
+            "id_uuid",
+            "id_work_directory",
+            "id_extract_recursively",
+            "id_ignored_patterns",
+            "id_attribution_template",
+            'id="modal-archive"',
+            'id="modal-reset"',
+            'id="modal-delete"',
+        ]
+        for expected in expected_ids:
+            self.assertContains(response, expected)
+
+        # Forcing a validation error
+        project2 = Project.objects.create(name="p2")
+        data = {"name": project2.name}
+        response = self.client.post(url, data)
+        expected_error = "<li>Project with this Name already exists.</li>"
+        self.assertContains(response, expected_error)
+
+    def test_scanpipe_views_project_settings_view_download_config_file(self):
+        url = reverse("project_settings", args=[self.project1.slug])
+        self.project1.settings = {"extract_recursively": False}
+        self.project1.save()
+
+        response = self.client.get(url, data={"download": 1})
+        self.assertEqual(b"extract_recursively: no\n", response.getvalue())
+        self.assertEqual("application/x-yaml", response.headers["Content-Type"])
+
     @mock.patch("scanpipe.models.Run.execute_task_async")
     def test_scanpipe_views_execute_pipeline_view(self, mock_execute_task):
         run = self.project1.add_pipeline("docker")
-        url = reverse("project_execute_pipeline", args=[self.project1.pk, run.uuid])
+        url = reverse("project_execute_pipeline", args=[self.project1.slug, run.uuid])
 
         response = self.client.get(url, follow=True)
         expected = f"Pipeline {run.pipeline_name} run started."
@@ -459,7 +520,7 @@ class ScanPipeViewsTest(TestCase):
     @mock.patch("scanpipe.models.Run.stop_task")
     def test_scanpipe_views_stop_pipeline_view(self, mock_stop_task):
         run = self.project1.add_pipeline("docker")
-        url = reverse("project_stop_pipeline", args=[self.project1.pk, run.uuid])
+        url = reverse("project_stop_pipeline", args=[self.project1.slug, run.uuid])
 
         response = self.client.get(url)
         self.assertEqual(404, response.status_code)
@@ -473,7 +534,7 @@ class ScanPipeViewsTest(TestCase):
     @mock.patch("scanpipe.models.Run.delete_task")
     def test_scanpipe_views_delete_pipeline_view(self, mock_delete_task):
         run = self.project1.add_pipeline("docker")
-        url = reverse("project_delete_pipeline", args=[self.project1.pk, run.uuid])
+        url = reverse("project_delete_pipeline", args=[self.project1.slug, run.uuid])
 
         response = self.client.get(url, follow=True)
         expected = f"Pipeline {run.pipeline_name} deleted."
@@ -538,8 +599,19 @@ class ScanPipeViewsTest(TestCase):
         expected = '<span class="tag is-danger">Stopped</span>'
         self.assertContains(response, expected)
 
+    def test_scanpipe_views_codebase_resource_details_view_tab_image(self):
+        resource1 = make_resource_file(self.project1, "file1.ext")
+        response = self.client.get(resource1.get_absolute_url())
+        self.assertNotContains(response, "tab-image")
+        self.assertNotContains(response, resource1.get_raw_url())
+
+        resource2 = make_resource_file(self.project1, "img.jpg", mime_type="image/jpeg")
+        response = self.client.get(resource2.get_absolute_url())
+        self.assertContains(response, "tab-image")
+        self.assertContains(response, "This resource is not available on disk.")
+
     def test_scanpipe_views_codebase_relation_list_view_count(self):
-        url = reverse("project_relations", args=[self.project1.uuid])
+        url = reverse("project_relations", args=[self.project1.slug])
 
         to_1 = make_resource_file(self.project1, "to/file1.ext")
         to_2 = make_resource_file(self.project1, "to/file2.ext")
@@ -557,7 +629,7 @@ class ScanPipeViewsTest(TestCase):
         self.assertContains(response, "2 to/ resources (3 relations)")
 
     def test_scanpipe_views_codebase_relation_diff_view(self):
-        url = reverse("resource_diff", args=[self.project1.uuid])
+        url = reverse("resource_diff", args=[self.project1.slug])
         data = {
             "from_path": "",
             "to_path": "",
@@ -589,3 +661,13 @@ class ScanPipeViewsTest(TestCase):
         }
         response = self.client.get(url, data=data)
         self.assertContains(response, '<table class="diff"')
+
+    def test_scanpipe_views_discovered_package_details_view_tab_vulnerabilities(self):
+        package1 = DiscoveredPackage.create_from_data(self.project1, package_data1)
+        package1.update(
+            affected_by_vulnerabilities=[{"vulnerability_id": "VCID-cah8-awtr-aaad"}]
+        )
+        response = self.client.get(package1.get_absolute_url())
+        self.assertContains(response, "tab-vulnerabilities")
+        self.assertContains(response, '<section id="tab-vulnerabilities"')
+        self.assertContains(response, "VCID-cah8-awtr-aaad")

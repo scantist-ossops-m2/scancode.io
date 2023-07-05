@@ -28,6 +28,7 @@ from pathlib import Path
 
 from django.apps import apps
 from django.core.serializers.json import DjangoJSONEncoder
+from django.forms.models import model_to_dict
 from django.template import Context
 from django.template import Template
 
@@ -221,6 +222,8 @@ class JSONResultsGenerator:
             "notice": SCAN_NOTICE,
             "uuid": project.uuid,
             "created_date": project.created_date,
+            "notes": project.notes,
+            "settings": project.settings,
             "input_sources": project.input_sources_list,
             "runs": runs.data,
             "extra_data": project.extra_data,
@@ -519,7 +522,7 @@ def _get_spdx_extracted_licenses(license_expressions):
     return extracted_licenses
 
 
-def to_spdx(project):
+def to_spdx(project, include_files=False):
     """
     Generate output for the provided ``project`` in SPDX document format.
     The output file is created in the ``project`` "output/" directory.
@@ -550,10 +553,12 @@ def to_spdx(project):
         if dep.for_package
     ]
 
-    files_as_spdx = [
-        resource.as_spdx()
-        for resource in get_queryset(project, "codebaseresource").files()
-    ]
+    files_as_spdx = []
+    if include_files:
+        files_as_spdx = [
+            resource.as_spdx()
+            for resource in get_queryset(project, "codebaseresource").files()
+        ]
 
     document = spdx.Document(
         name=f"scancodeio_{project.name}",
@@ -619,7 +624,7 @@ def to_cyclonedx(project):
     The output file is created in the ``project`` "output/" directory.
     Return the path of the generated output file.
     """
-    output_file = project.get_output_file_path("results", "bom.json")
+    output_file = project.get_output_file_path("results", "cdx.json")
 
     cyclonedx_bom = get_cyclonedx_bom(project)
 
@@ -640,11 +645,15 @@ def get_expression_as_attribution_links(parsed_expression):
     return parsed_expression.simplify().render(template=template)
 
 
-def render_template(template_location, context):
-    """Render a Django template at `template_location` using the `context` dict."""
+def render_template(template_string, context):
+    """Render a Django ``template_string`` using the ``context`` dict."""
+    return Template(template_string).render(Context(context))
+
+
+def render_template_file(template_location, context):
+    """Render a Django template at ``template_location`` using the ``context`` dict."""
     template_string = Path(template_location).read_text()
-    template = Template(template_string)
-    return template.render(Context(context))
+    return render_template(template_string, context)
 
 
 def get_attribution_template(project):
@@ -691,37 +700,84 @@ def get_package_expression_symbols(parsed_expression):
     return license_symbols
 
 
+def get_package_data_for_attribution(package, licensing):
+    """
+    Convert the ``package`` instance into a dictionary of values usable during
+    attribution generation.
+    """
+    package_data = model_to_dict(package, exclude=["codebase_resources"])
+    package_data["package_url"] = package.package_url
+
+    if license_expression := package.declared_license_expression:
+        parsed = licensing.parse(license_expression)
+        license_symbols = get_package_expression_symbols(parsed)
+
+        package_licenses = [symbol.wrapped for symbol in set(license_symbols)]
+        package_data["licenses"] = package_licenses
+
+        expression_links = get_expression_as_attribution_links(parsed)
+        package_data["expression_links"] = expression_links
+
+    return package_data
+
+
+def get_unique_licenses(packages):
+    """
+    Return a list of unique License symbol objects preserving ordering.
+    Return an empty list if the packages do not have licenses.
+
+    Replace by the following one-liner once this toolkit issues is fixed:
+    https://github.com/nexB/scancode-toolkit/issues/3425
+    licenses = set(license for package in packages for license in package["licenses"])
+    """
+    seen_license_keys = set()
+    licenses = []
+
+    for package in packages:
+        for license in package.get("licenses") or []:
+            if license.key not in seen_license_keys:
+                seen_license_keys.add(license.key)
+                licenses.append(license)
+
+    return licenses
+
+
 def to_attribution(project):
     """
     Generate attribution for the provided ``project``.
     The output file is created in the ``project`` "output/" directory.
     Return the path of the generated output file.
+
     Custom template can be provided in the
     `codebase/.scancode/templates/attribution.html` location.
+
+    The model instances are converted into data dict to prevent any data leak as the
+    attribution template is customizable.
     """
     output_file = project.get_output_file_path("results", "attribution.html")
 
-    packages = get_queryset(project, "discoveredpackage")
+    project_data = model_to_dict(project, fields=["name", "notes", "created_date"])
 
     licensing = get_licensing()
-    license_symbols = []
+    packages = [
+        get_package_data_for_attribution(package, licensing)
+        for package in get_queryset(project, "discoveredpackage")
+    ]
 
-    for package in packages:
-        if package.declared_license_expression:
-            parsed = licensing.parse(package.declared_license_expression)
-            license_symbols.extend(get_package_expression_symbols(parsed))
-            package.expression_links = get_expression_as_attribution_links(parsed)
-
-    licenses = [symbol.wrapped for symbol in set(license_symbols)]
-    licenses.sort(key=attrgetter("spdx_license_key"))
+    licenses = get_unique_licenses(packages)
+    licenses = sorted(licenses, key=attrgetter("spdx_license_key"))
 
     context = {
-        "project": project,
+        "project": project_data,
         "packages": packages,
         "licenses": licenses,
     }
-    template_location = get_attribution_template(project)
-    rendered_template = render_template(template_location, context)
-    output_file.write_text(rendered_template)
 
+    if template_string := project.get_env("attribution_template"):
+        rendered_template = render_template(template_string, context)
+    else:
+        template_location = get_attribution_template(project)
+        rendered_template = render_template_file(template_location, context)
+
+    output_file.write_text(rendered_template)
     return output_file

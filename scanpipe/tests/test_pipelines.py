@@ -30,6 +30,7 @@ from unittest import expectedFailure
 from unittest import mock
 from unittest import skipIf
 
+from django.conf import settings
 from django.test import TestCase
 from django.test import tag
 
@@ -199,6 +200,36 @@ class ScanPipePipelinesTest(TestCase):
         )
         self.assertEqual(expected, str(caught_warning.message))
 
+    def test_scanpipe_pipelines_class_env_loaded_from_config_file(self):
+        project1 = Project.objects.create(name="Analysis")
+        run = project1.add_pipeline("do_nothing")
+        pipeline = run.make_pipeline_instance()
+        self.assertEqual({}, pipeline.env)
+
+        config_file = project1.input_path / settings.SCANCODEIO_CONFIG_FILE
+        config_file.write_text("{*this is not valid yml*}")
+        pipeline = run.make_pipeline_instance()
+        self.assertEqual({}, pipeline.env)
+
+        config_file.write_text("extract_recursively: true")
+        pipeline = run.make_pipeline_instance()
+        self.assertEqual({"extract_recursively": True}, pipeline.env)
+
+    def test_scanpipe_pipelines_class_flag_ignored_resources(self):
+        project1 = Project.objects.create(name="Analysis")
+        run = project1.add_pipeline("do_nothing")
+        pipeline = run.make_pipeline_instance()
+        self.assertIsNone(pipeline.env.get("ignored_patterns"))
+
+        project1.settings.update({"ignored_patterns": "*.ext"})
+        project1.save()
+        pipeline = run.make_pipeline_instance()
+
+        with mock.patch("scanpipe.pipes.flag.flag_ignored_patterns") as mock_flag:
+            mock_flag.return_value = None
+            pipeline.flag_ignored_resources()
+        mock_flag.assert_called_with(project1, patterns="*.ext")
+
 
 class RootFSPipelineTest(TestCase):
     def test_scanpipe_rootfs_pipeline_extract_input_files_errors(self):
@@ -260,6 +291,8 @@ class PipelinesIntegrationTest(TestCase):
         "file_type",
         # mime type is inconsistent across systems
         "mime_type",
+        "notes",
+        "settings",
     ]
 
     def _without_keys(self, data, exclude_keys):
@@ -648,9 +681,18 @@ class PipelinesIntegrationTest(TestCase):
                     {
                         "vulnerability_id": "VCID-cah8-awtr-aaad",
                         "summary": "An issue was discovered.",
-                    }
+                    },
                 ],
-            }
+            },
+            {
+                "purl": "pkg:deb/debian/adduser@3.118?qualifiers=1",
+                "affected_by_vulnerabilities": [
+                    {
+                        "vulnerability_id": "VCID-cah8-awtr-aaad",
+                        "summary": "An issue was discovered.",
+                    },
+                ],
+            },
         ]
         mock_get_vulnerabilities.return_value = vulnerability_data
 
@@ -658,8 +700,8 @@ class PipelinesIntegrationTest(TestCase):
         self.assertEqual(0, exitcode, msg=out)
 
         package1.refresh_from_db()
-        expected = {"discovered_vulnerabilities": vulnerability_data}
-        self.assertEqual(expected, package1.extra_data)
+        expected = vulnerability_data[0]["affected_by_vulnerabilities"]
+        self.assertEqual(expected, package1.affected_by_vulnerabilities)
 
     def test_scanpipe_inspect_manifest_pipeline_integration_test(self):
         pipeline_name = "inspect_manifest"
@@ -748,7 +790,7 @@ class PipelinesIntegrationTest(TestCase):
         pipeline_name = "inspect_manifest"
         project1 = Project.objects.create(name="Analysis")
 
-        input_location = self.data_location / "cyclonedx/nested.bom.json"
+        input_location = self.data_location / "cyclonedx/nested.cdx.json"
         project1.copy_input_from(input_location)
 
         run = project1.add_pipeline(pipeline_name)
@@ -840,4 +882,27 @@ class PipelinesIntegrationTest(TestCase):
 
         result_file = output.to_json(project1)
         expected_file = self.data_location / "flume-ng-node-d2d.json"
+        self.assertPipelineResultEqual(expected_file, result_file)
+
+    def test_scanpipe_deploy_to_develop_pipeline_with_about_file(self):
+        pipeline_name = "deploy_to_develop"
+        project1 = Project.objects.create(name="Analysis")
+
+        data_dir = self.data_location / "d2d" / "about_files"
+        project1.copy_input_from(data_dir / "from-with-about-file.zip")
+        project1.copy_input_from(data_dir / "to-with-jar.zip")
+
+        run = project1.add_pipeline(pipeline_name)
+        pipeline = run.make_pipeline_instance()
+
+        exitcode, out = pipeline.execute()
+        self.assertEqual(0, exitcode, msg=out)
+
+        self.assertEqual(35, project1.codebaseresources.count())
+        self.assertEqual(30, project1.codebaserelations.count())
+        self.assertEqual(1, project1.discoveredpackages.count())
+        self.assertEqual(0, project1.discovereddependencies.count())
+
+        result_file = output.to_json(project1)
+        expected_file = data_dir / "expected.json"
         self.assertPipelineResultEqual(expected_file, result_file)

@@ -24,6 +24,7 @@ import collections
 import json
 import shutil
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from unittest import mock
 
@@ -235,7 +236,7 @@ class ScanPipeOutputPipesTest(TestCase):
         results_json["metadata"]["tools"][0]["version"] = "31.0.0"
         results = json.dumps(results_json, indent=2)
 
-        expected_location = self.data_path / "cyclonedx/asgiref-3.3.0.bom.json"
+        expected_location = self.data_path / "cyclonedx/asgiref-3.3.0.cdx.json"
         if regen:
             expected_location.write_text(results)
 
@@ -247,7 +248,7 @@ class ScanPipeOutputPipesTest(TestCase):
         project = Project.objects.get(name="asgiref")
 
         with self.assertNumQueries(8):
-            output_file = output.to_spdx(project=project)
+            output_file = output.to_spdx(project=project, include_files=True)
         self.assertIn(output_file.name, project.output_root)
 
         # Patch the `created` date and tool version
@@ -307,8 +308,15 @@ class ScanPipeOutputPipesTest(TestCase):
 
     def test_scanpipe_pipes_outputs_render_template(self):
         template_location = str(self.data_path / "outputs" / "render_me.html")
+        template_string = Path(template_location).read_text()
         context = {"var": "value"}
-        rendered = output.render_template(template_location, context)
+        rendered = output.render_template(template_string, context)
+        self.assertEqual("value", rendered)
+
+    def test_scanpipe_pipes_outputs_render_template_file(self):
+        template_location = str(self.data_path / "outputs" / "render_me.html")
+        context = {"var": "value"}
+        rendered = output.render_template_file(template_location, context)
         self.assertEqual("value", rendered)
 
     def test_scanpipe_pipes_outputs_get_attribution_template(self):
@@ -326,6 +334,24 @@ class ScanPipeOutputPipesTest(TestCase):
         template_location = str(output.get_attribution_template(project))
         expected_location = "codebase/.scancode/templates/attribution.html"
         self.assertTrue(template_location.endswith(expected_location))
+
+    def test_scanpipe_pipes_outputs_get_package_data_for_attribution(self):
+        project = Project.objects.create(name="Analysis")
+        package_data = dict(package_data1)
+        expression = "mit AND gpl-2.0 AND mit"
+        package_data["declared_license_expression"] = expression
+        package = pipes.update_or_create_package(project, package_data)
+
+        data = output.get_package_data_for_attribution(package, get_licensing())
+        self.assertEqual("pkg:deb/debian/adduser@3.118?arch=all", data["package_url"])
+        expected = (
+            '<a href="#license_gpl-2.0">GPL-2.0-only</a> '
+            'AND <a href="#license_mit">MIT</a>'
+        )
+        self.assertEqual(expected, data["expression_links"])
+        expected = ["mit", "gpl-2.0"]
+        licenses = [license.key for license in data["licenses"]]
+        self.assertEqual(sorted(expected), sorted(licenses))
 
     def test_scanpipe_pipes_outputs_to_attribution(self):
         project = Project.objects.create(name="Analysis")
@@ -506,6 +532,72 @@ class ScanPipeXLSXOutputPipesTest(TestCase):
         )
         self.assertEqual(result, "value1\nbar\nfoo")
         self.assertEqual(error, None)
+
+    def test_get_unique_licenses_returns_unique_and_preserve_order(self):
+        @dataclass
+        class Lic:
+            key: str
+
+        packages = [
+            {
+                "name": "foo",
+                "purl": "pkg:generic/foo",
+                "licenses": [Lic("foo"), Lic("bar"), Lic("foo")],
+            }
+        ]
+        result = output.get_unique_licenses(packages)
+        expected = [Lic("foo"), Lic("bar")]
+        self.assertEqual(result, expected)
+
+        packages = [
+            {
+                "name": "foo",
+                "purl": "pkg:generic/foo",
+                "licenses": [Lic("bar"), Lic("foo"), Lic("foo")],
+            }
+        ]
+        result = output.get_unique_licenses(packages)
+        expected = [Lic("bar"), Lic("foo")]
+        self.assertEqual(result, expected)
+
+        packages = [
+            {
+                "name": "foo",
+                "purl": "pkg:generic/foo",
+                "licenses": [Lic("bar")],
+            }
+        ]
+        result = output.get_unique_licenses(packages)
+        expected = [Lic("bar")]
+        self.assertEqual(result, expected)
+
+    def test_get_unique_licenses_does_not_fail_on_empties(self):
+        packages = [
+            {
+                "name": "foo",
+                "purl": "pkg:generic/foo",
+                "licenses": [],
+            }
+        ]
+        result = output.get_unique_licenses(packages)
+        expected = []
+        self.assertEqual(result, expected)
+
+        packages = [
+            {
+                "name": "foo",
+                "purl": "pkg:generic/foo",
+                "licenses": None,
+            }
+        ]
+        result = output.get_unique_licenses(packages)
+        expected = []
+        self.assertEqual(result, expected)
+
+        packages = [{"name": "foo"}]
+        result = output.get_unique_licenses(packages)
+        expected = []
+        self.assertEqual(result, expected)
 
 
 def get_cell_texts(original_text, test_dir, workbook_name):

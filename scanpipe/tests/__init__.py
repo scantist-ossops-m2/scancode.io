@@ -127,7 +127,7 @@ package_data1 = {
     "declared_license_expression": "gpl-2.0 AND gpl-2.0-plus",
     "declared_license_expression_spdx": "GPL-2.0-only AND GPL-2.0-or-later",
     "extracted_license_statement": "",
-    "notice_text": None,
+    "notice_text": "Notice\nText",
     "root_path": None,
     "dependencies": [],
     "source_packages": [],
@@ -136,6 +136,13 @@ package_data1 = {
     "repository_download_url": None,
     "api_data_url": None,
     "package_uid": "pkg:deb/debian/adduser@3.118?uuid=610bed29-ce39-40e7-92d6-fd8b",
+}
+
+package_data2 = {
+    "type": "deb",
+    "namespace": "debian",
+    "name": "adduser",
+    "version": "3.119",
 }
 
 for_package_uid = "pkg:deb/debian/adduser@3.118?uuid=610bed29-ce39-40e7-92d6-fd8b"
