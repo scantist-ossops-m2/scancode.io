@@ -24,6 +24,8 @@ from django import forms
 from django.apps import apps
 from django.core.exceptions import ValidationError
 
+import saneyaml
+
 from scanpipe.models import Project
 from scanpipe.pipes.fetch import fetch_urls
 
@@ -204,10 +206,29 @@ class ListTextarea(forms.CharField):
         return value
 
 
+def validate_policies(policies_yaml):
+    """Return True if the provided ``policies_yaml`` is valid."""
+    try:
+        loaded_policies = saneyaml.load(policies_yaml)
+    except saneyaml.YAMLError as e:
+        raise ValidationError(f"Policies format error: {e}")
+
+    if not isinstance(loaded_policies, dict):
+        raise ValidationError("Policies format error.")
+
+    if "license_policies" not in loaded_policies:
+        raise ValidationError(
+            "The `license_policies` key is missing from provided policies data."
+        )
+
+    return True
+
+
 class ProjectSettingsForm(forms.ModelForm):
     settings_fields = [
         "extract_recursively",
         "ignored_patterns",
+        "policies",
         "scancode_license_score",
         "attribution_template",
     ]
@@ -229,6 +250,15 @@ class ProjectSettingsForm(forms.ModelForm):
                 "placeholder": "*.xml\ntests/*\n*docs/*.rst",
             },
         ),
+    )
+    policies = forms.CharField(
+        label="License Policies",
+        required=False,
+        help_text=(
+            "Refer to the documentation for syntax details: "
+            "https://scancodeio.readthedocs.io/en/latest/tutorial_license_policies.html"
+        ),
+        widget=forms.Textarea(attrs={"class": "textarea is-dynamic", "rows": 3}),
     )
     scancode_license_score = forms.IntegerField(
         label="License score",
@@ -281,6 +311,11 @@ class ProjectSettingsForm(forms.ModelForm):
         }
         project.settings.update(config)
         project.save(update_fields=["settings"])
+
+    def clean_policies(self):
+        if policies := self.cleaned_data.get("policies"):
+            validate_policies(policies)
+        return policies
 
 
 class ProjectCloneForm(forms.Form):
