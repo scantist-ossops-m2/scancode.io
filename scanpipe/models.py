@@ -38,6 +38,7 @@ from django.conf import settings
 from django.core import checks
 from django.core.exceptions import ObjectDoesNotExist
 from django.core.exceptions import ValidationError
+from django.core.paginator import Paginator
 from django.core.serializers.json import DjangoJSONEncoder
 from django.core.validators import EMPTY_VALUES
 from django.db import models
@@ -67,9 +68,11 @@ from commoncode.fileutils import parent_directory
 from commoncode.hash import multi_checksums
 from cyclonedx import model as cyclonedx_model
 from cyclonedx.model import component as cyclonedx_component
+from extractcode import EXTRACT_SUFFIX
 from formattedcode.output_cyclonedx import CycloneDxExternalRef
 from licensedcode.cache import build_spdx_license_expression
 from licensedcode.cache import get_licensing
+from matchcode_toolkit.fingerprinting import IGNORED_DIRECTORY_FINGERPRINTS
 from packageurl import PackageURL
 from packageurl import normalize_qualifiers
 from packageurl.contrib.django.models import PackageURLMixin
@@ -79,6 +82,9 @@ from rq.command import send_stop_job_command
 from rq.exceptions import NoSuchJobError
 from rq.job import Job
 from rq.job import JobStatus
+from taggit.managers import TaggableManager
+from taggit.models import GenericUUIDTaggedItemBase
+from taggit.models import TaggedItemBase
 
 from scancodeio import __version__ as scancodeio_version
 from scanpipe import humanize_time
@@ -90,6 +96,10 @@ scanpipe_app = apps.get_app_config("scanpipe")
 
 class RunInProgressError(Exception):
     """Run are in progress or queued on this project."""
+
+
+class RunNotAllowedToStart(Exception):
+    """Previous Runs have not completed yet."""
 
 
 # PackageURL._fields
@@ -481,6 +491,12 @@ class ProjectQuerySet(models.QuerySet):
         return self.annotate(**annotations)
 
 
+class UUIDTaggedItem(GenericUUIDTaggedItemBase, TaggedItemBase):
+    class Meta:
+        verbose_name = _("Label")
+        verbose_name_plural = _("Labels")
+
+
 class Project(UUIDPKModel, ExtraDataFieldMixin, UpdateMixin, models.Model):
     """
     The Project encapsulates all analysis processing.
@@ -518,6 +534,7 @@ class Project(UUIDPKModel, ExtraDataFieldMixin, UpdateMixin, models.Model):
     )
     notes = models.TextField(blank=True)
     settings = models.JSONField(default=dict, blank=True)
+    labels = TaggableManager(through=UUIDTaggedItem)
 
     objects = ProjectQuerySet.as_manager()
 
@@ -589,8 +606,11 @@ class Project(UUIDPKModel, ExtraDataFieldMixin, UpdateMixin, models.Model):
         # run the `_raw_delete()` on its QuerySet.
         _, deleted_counter = self.discoveredpackages.all().delete()
 
+        # Removes all tags from this project by deleting the UUIDTaggedItem instances.
+        self.labels.clear()
+
         relationships = [
-            self.projecterrors,
+            self.projectmessages,
             self.codebaserelations,
             self.discovereddependencies,
             self.codebaseresources,
@@ -648,6 +668,7 @@ class Project(UUIDPKModel, ExtraDataFieldMixin, UpdateMixin, models.Model):
         copy_inputs=False,
         copy_pipelines=False,
         copy_settings=False,
+        copy_subscriptions=False,
         execute_now=False,
     ):
         """Clone this project using the provided ``clone_name`` as new project name."""
@@ -657,6 +678,9 @@ class Project(UUIDPKModel, ExtraDataFieldMixin, UpdateMixin, models.Model):
             settings=self.settings if copy_settings else {},
         )
 
+        if labels := self.labels.names():
+            cloned_project.labels.add(*labels)
+
         if copy_inputs:
             for input_location in self.inputs():
                 cloned_project.copy_input_from(input_location)
@@ -664,6 +688,10 @@ class Project(UUIDPKModel, ExtraDataFieldMixin, UpdateMixin, models.Model):
         if copy_pipelines:
             for run in self.runs.all():
                 cloned_project.add_pipeline(run.pipeline_name, execute_now)
+
+        if copy_subscriptions:
+            for subscription in self.webhooksubscriptions.all():
+                cloned_project.add_webhook_subscription(subscription.target_url)
 
         return cloned_project
 
@@ -849,6 +877,17 @@ class Project(UUIDPKModel, ExtraDataFieldMixin, UpdateMixin, models.Model):
         """
         return self.get_root_content(self.output_path)
 
+    def get_output_files_info(self):
+        """Return files form the output work directory including the name and size."""
+        return [
+            {
+                "name": path.name,
+                "size": path.stat().st_size,
+            }
+            for path in self.output_path.glob("*")
+            if path.is_file()
+        ]
+
     def get_output_file_path(self, name, extension):
         """
         Return a crafted file path in the project output/ directory using
@@ -970,8 +1009,12 @@ class Project(UUIDPKModel, ExtraDataFieldMixin, UpdateMixin, models.Model):
             pipeline_name=pipeline_name,
             description=pipeline_class.get_summary(),
         )
-        if execute_now:
-            transaction.on_commit(run.execute_task_async)
+
+        # Do not start the pipeline execution, even if explicitly requested,
+        # when the Run is not allowed to start yet.
+        if execute_now and run.can_start:
+            transaction.on_commit(run.start)
+
         return run
 
     def add_webhook_subscription(self, target_url):
@@ -986,31 +1029,47 @@ class Project(UUIDPKModel, ExtraDataFieldMixin, UpdateMixin, models.Model):
         with suppress(ObjectDoesNotExist):
             return self.runs.not_started().earliest("created_date")
 
-    def get_latest_failed_run(self):
-        """Return the latest failed Run instance of the current project."""
-        with suppress(ObjectDoesNotExist):
-            return self.runs.failed().latest("created_date")
-
-    def add_error(self, error, model, details=None):
+    def add_message(
+        self, severity, description="", model="", details=None, exception=None
+    ):
         """
-        Create a "ProjectError" record from the provided `error` Exception for this
-        project.
-        The `model` attribute can be provided as a string or as a Model class.
+        Create a ProjectMessage record for this Project.
+
+        The ``model`` attribute can be provided as a string or as a Model class.
         """
         if inspect.isclass(model):
             model = model.__name__
 
         traceback = ""
-        if hasattr(error, "__traceback__"):
-            traceback = "".join(format_tb(error.__traceback__))
+        if hasattr(exception, "__traceback__"):
+            traceback = "".join(format_tb(exception.__traceback__))
 
-        return ProjectError.objects.create(
+        if exception and not description:
+            description = str(exception)
+
+        return ProjectMessage.objects.create(
             project=self,
+            severity=severity,
+            description=description,
             model=model,
             details=details or {},
-            message=str(error),
             traceback=traceback,
         )
+
+    def add_info(self, description="", model="", details=None, exception=None):
+        """Create an INFO ProjectMessage record for this project."""
+        severity = ProjectMessage.Severity.INFO
+        return self.add_message(severity, description, model, details, exception)
+
+    def add_warning(self, description="", model="", details=None, exception=None):
+        """Create a WARNING ProjectMessage record for this project."""
+        severity = ProjectMessage.Severity.WARNING
+        return self.add_message(severity, description, model, details, exception)
+
+    def add_error(self, description="", model="", details=None, exception=None):
+        """Create an ERROR ProjectMessage record using for this project."""
+        severity = ProjectMessage.Severity.ERROR
+        return self.add_message(severity, description, model, details, exception)
 
     def get_absolute_url(self):
         """Return this project's details URL."""
@@ -1063,9 +1122,9 @@ class Project(UUIDPKModel, ExtraDataFieldMixin, UpdateMixin, models.Model):
         return self.discovereddependencies.count()
 
     @cached_property
-    def error_count(self):
-        """Return the number of errors related to this project."""
-        return self.projecterrors.count()
+    def message_count(self):
+        """Return the number of messages related to this project."""
+        return self.projectmessages.count()
 
     @cached_property
     def relation_count(self):
@@ -1203,10 +1262,21 @@ class ProjectRelatedModel(UpdateMixin, models.Model):
         return [field.name for field in cls._meta.get_fields()]
 
 
-class ProjectError(UUIDPKModel, ProjectRelatedModel):
-    """Stores errors and exceptions raised during a pipeline run."""
+class ProjectMessage(UUIDPKModel, ProjectRelatedModel):
+    """Stores messages such as errors and exceptions raised during a pipeline run."""
 
-    created_date = models.DateTimeField(auto_now_add=True, editable=False)
+    class Severity(models.TextChoices):
+        INFO = "info"
+        WARNING = "warning"
+        ERROR = "error"
+
+    severity = models.CharField(
+        max_length=10,
+        choices=Severity.choices,
+        editable=False,
+        help_text=_("Severity level of the message."),
+    )
+    description = models.TextField(blank=True, help_text=_("Description."))
     model = models.CharField(max_length=100, help_text=_("Name of the model class."))
     details = models.JSONField(
         default=dict,
@@ -1214,23 +1284,27 @@ class ProjectError(UUIDPKModel, ProjectRelatedModel):
         encoder=DjangoJSONEncoder,
         help_text=_("Data that caused the error."),
     )
-    message = models.TextField(blank=True, help_text=_("Error message."))
     traceback = models.TextField(blank=True, help_text=_("Exception traceback."))
+    created_date = models.DateTimeField(auto_now_add=True, editable=False)
 
     class Meta:
         ordering = ["created_date"]
+        indexes = [
+            models.Index(fields=["severity"]),
+            models.Index(fields=["model"]),
+        ]
 
     def __str__(self):
-        return f"[{self.pk}] {self.model}: {self.message}"
+        return f"[{self.pk}] {self.model}: {self.description}"
 
 
-class SaveProjectErrorMixin:
+class SaveProjectMessageMixin:
     """
-    Uses `SaveProjectErrorMixin` on a model to create a "ProjectError" entry
+    Uses `SaveProjectMessageMixin` on a model to create a "ProjectMessage" entry
     from a raised exception during `save()` instead of stopping the analysis process.
 
-    The creation of a "ProjectError" can be skipped providing False for the `save_error`
-    argument. In that case, the error is not captured, it is re-raised.
+    The creation of a "ProjectMessage" can be skipped providing False for the
+    `save_error` argument. In that case, the error is not captured, it is re-raised.
     """
 
     def save(self, *args, save_error=True, capture_exception=True, **kwargs):
@@ -1255,7 +1329,7 @@ class SaveProjectErrorMixin:
         if "project" not in fields:
             return [
                 checks.Error(
-                    "'project' field is required when using SaveProjectErrorMixin.",
+                    "'project' field is required when using SaveProjectMessageMixin.",
                     obj=cls,
                     id="scanpipe.models.E001",
                 )
@@ -1263,18 +1337,24 @@ class SaveProjectErrorMixin:
 
         return []
 
-    def add_error(self, error):
-        """Create a "ProjectError" record from a given `error` Exception instance."""
+    def add_error(self, exception):
+        """
+        Create a ProjectMessage record using the provided ``exception`` Exception
+        instance.
+        """
         return self.project.add_error(
-            error=error,
             model=self.__class__,
             details=model_to_dict(self),
+            exception=exception,
         )
 
-    def add_errors(self, errors):
-        """Create "ProjectError" records from a provided `errors` Exception list."""
-        for error in errors:
-            self.add_error(error)
+    def add_errors(self, exceptions):
+        """
+        Create ProjectMessage records suing the provided ``exceptions`` Exception
+        list.
+        """
+        for exception in exceptions:
+            self.add_error(exception)
 
 
 class UpdateFromDataMixin:
@@ -1325,6 +1405,10 @@ class RunQuerySet(ProjectRelatedQuerySet):
         """Pipeline execution completed, includes both succeed and failed runs."""
         return self.filter(task_end_date__isnull=False)
 
+    def not_executed(self):
+        """No `task_end_date` set. Its execution has not completed or started yet."""
+        return self.filter(task_end_date__isnull=True)
+
     def succeed(self):
         """Pipeline execution completed with success."""
         return self.filter(task_exitcode=0)
@@ -1369,6 +1453,36 @@ class Run(UUIDPKModel, ProjectRelatedModel, AbstractTaskFieldsModel):
 
     def __str__(self):
         return f"{self.pipeline_name}"
+
+    def get_previous_runs(self):
+        """Return all the previous Run instances regardless of their status."""
+        return self.project.runs.filter(created_date__lt=self.created_date)
+
+    @property
+    def can_start(self):
+        """
+        Return True if this Run is allowed to start its execution.
+
+        Run are not allowed to start when any of their previous Run instances within
+        the pipeline has not completed (not started, queued, or running).
+        This is enforced to ensure the pipelines are run in a sequential order.
+        """
+        if self.status != self.Status.NOT_STARTED:
+            return False
+
+        if self.get_previous_runs().not_executed().exists():
+            return False
+
+        return True
+
+    def start(self):
+        """Start the pipeline execution when allowed or raised an exception."""
+        if self.can_start:
+            return self.execute_task_async()
+
+        raise RunNotAllowedToStart(
+            "Cannot execute this action until all previous pipeline runs are completed."
+        )
 
     def execute_task_async(self):
         """Enqueues the pipeline execution task for an asynchronous execution."""
@@ -1419,9 +1533,11 @@ class Run(UUIDPKModel, ProjectRelatedModel, AbstractTaskFieldsModel):
             if self.status == RunStatus.QUEUED:
                 logger.info(
                     f"No Job found for QUEUED Run={self.task_id}. "
-                    f"Enqueueing a new Job in the worker registery."
+                    f"Enqueueing a new Job in the worker registry."
                 )
-                self.execute_task_async()
+                # Reset the status to NOT_STARTED to allow the execution in `can_start`
+                self.reset_task_values()
+                self.start()
 
             elif self.status == RunStatus.RUNNING:
                 logger.info(
@@ -1582,6 +1698,9 @@ class CodebaseResourceQuerySet(ProjectRelatedQuerySet):
     def symlinks(self):
         return self.filter(type=self.model.Type.SYMLINK)
 
+    def archives(self):
+        return self.filter(is_archive=True)
+
     def without_symlinks(self):
         return self.filter(~Q(type=self.model.Type.SYMLINK))
 
@@ -1593,6 +1712,9 @@ class CodebaseResourceQuerySet(ProjectRelatedQuerySet):
 
     def has_package_data(self):
         return self.filter(~Q(package_data=[]))
+
+    def has_license_expression(self):
+        return self.filter(~Q(detected_license_expression=""))
 
     def unknown_license(self):
         return self.filter(detected_license_expression__icontains="unknown")
@@ -1626,6 +1748,30 @@ class CodebaseResourceQuerySet(ProjectRelatedQuerySet):
     def path_pattern(self, pattern):
         """Resources with a path that match the provided ``pattern``."""
         return self.filter(path__regex=posix_regex_to_django_regex_lookup(pattern))
+
+    def has_directory_content_fingerprint(self):
+        """
+        Resources that have the key `directory_content` set in the `extra_data`
+        field and `directory_content` is not part of `IGNORED_DIRECTORY_FINGERPRINTS`.
+        """
+        return self.filter(
+            ~Q(extra_data__directory_content="")
+            and ~Q(extra_data__directory_content__in=IGNORED_DIRECTORY_FINGERPRINTS)
+        )
+
+    def paginated(self, per_page=5000):
+        """
+        Iterate over a (large) QuerySet by chunks of ``per_page`` items.
+
+        This is done to prevent high memory usage when using a regular QuerySet
+        or QuerySet.iterator to iterate over a large number of
+        CodebaseResources:
+
+        https://nextlinklabs.com/resources/insights/django-big-data-iteration
+        https://stackoverflow.com/questions/4222176/why-is-iterating-through-a-large-django-queryset-consuming-massive-amounts-of-me/
+        """
+        for page in Paginator(self, per_page=per_page):
+            yield page.object_list
 
 
 class ScanFieldsModelMixin(models.Model):
@@ -1837,7 +1983,7 @@ class CodebaseResource(
     ProjectRelatedModel,
     ScanFieldsModelMixin,
     ExtraDataFieldMixin,
-    SaveProjectErrorMixin,
+    SaveProjectMessageMixin,
     UpdateFromDataMixin,
     HashFieldsMixin,
     ComplianceAlertMixin,
@@ -2019,10 +2165,17 @@ class CodebaseResource(
 
         for segment in Path(self.path).parts:
             if part_and_subpath:
-                current_path += f"/{segment}"
+                current_path += "/"
+            current_path += segment
+
+            if EXTRACT_SUFFIX in segment:
+                is_extract = True
+                base_segment = segment[: -len(EXTRACT_SUFFIX)]
+                base_current_path = current_path[: -len(EXTRACT_SUFFIX)]
+                part_and_subpath.append((base_segment, base_current_path, is_extract))
             else:
-                current_path += f"{segment}"
-            part_and_subpath.append((segment, current_path))
+                is_extract = False
+                part_and_subpath.append((segment, current_path, is_extract))
 
         return part_and_subpath
 
@@ -2151,8 +2304,8 @@ class CodebaseResource(
     @classmethod
     def create_from_data(cls, project, resource_data):
         """
-        Create and returns a Discover`edPackage for a `project` from the `package_data`.
-        If one of the values of the required fields is not available, a "ProjectError"
+        Create and returns a DiscoveredPackage for a `project` from the `package_data`.
+        If one of the values of the required fields is not available, a "ProjectMessage"
         is created instead of a new DiscoveredPackage instance.
         """
         resource_data = resource_data.copy()
@@ -2176,19 +2329,19 @@ class CodebaseResource(
 
         Errors that may happen during the DiscoveredPackage creation are capture
         at this level, rather that in the DiscoveredPackage.create_from_data level,
-        so resource data can be injected in the ProjectError record.
+        so resource data can be injected in the ProjectMessage record.
         """
         try:
             package = DiscoveredPackage.create_from_data(self.project, package_data)
-        except Exception as error:
-            self.project.add_error(
-                error=error,
+        except Exception as exception:
+            self.project.add_warning(
                 model=DiscoveredPackage,
                 details={
                     "codebase_resource_path": self.path,
                     "codebase_resource_pk": self.pk,
                     **package_data,
                 },
+                exception=exception,
             )
         else:
             self.add_package(package)
@@ -2512,7 +2665,7 @@ class AbstractPackage(models.Model):
 class DiscoveredPackage(
     ProjectRelatedModel,
     ExtraDataFieldMixin,
-    SaveProjectErrorMixin,
+    SaveProjectMessageMixin,
     UpdateFromDataMixin,
     HashFieldsMixin,
     PackageURLMixin,
@@ -2546,6 +2699,7 @@ class DiscoveredPackage(
     )
     keywords = models.JSONField(default=list, blank=True)
     source_packages = models.JSONField(default=list, blank=True)
+    tag = models.CharField(blank=True, max_length=50)
 
     objects = DiscoveredPackageQuerySet.as_manager()
 
@@ -2566,6 +2720,7 @@ class DiscoveredPackage(
             models.Index(fields=["sha256"]),
             models.Index(fields=["sha512"]),
             models.Index(fields=["compliance_alert"]),
+            models.Index(fields=["tag"]),
         ]
         constraints = [
             models.UniqueConstraint(
@@ -2607,7 +2762,7 @@ class DiscoveredPackage(
     def create_from_data(cls, project, package_data):
         """
         Create and returns a DiscoveredPackage for a `project` from the `package_data`.
-        If one of the values of the required fields is not available, a "ProjectError"
+        If one of the values of the required fields is not available, a "ProjectMessage"
         is created instead of a new DiscoveredPackage instance.
         """
         package_data = package_data.copy()
@@ -2624,7 +2779,7 @@ class DiscoveredPackage(
                 f"{', '.join(missing_values)}"
             )
 
-            project.add_error(error=message, model=cls, details=package_data)
+            project.add_warning(description=message, model=cls, details=package_data)
             return
 
         qualifiers = package_data.get("qualifiers")
@@ -2640,7 +2795,7 @@ class DiscoveredPackage(
         discovered_package = cls(project=project, **cleaned_data)
         # Using save_error=False to not capture potential errors at this level but
         # rather in the CodebaseResource.create_and_add_package method so resource data
-        # can be injected in the ProjectError record.
+        # can be injected in the ProjectMessage record.
         discovered_package.save(save_error=False, capture_exception=False)
         return discovered_package
 
@@ -2816,7 +2971,7 @@ class DiscoveredDependencyQuerySet(
 
 class DiscoveredDependency(
     ProjectRelatedModel,
-    SaveProjectErrorMixin,
+    SaveProjectMessageMixin,
     UpdateFromDataMixin,
     VulnerabilityMixin,
     PackageURLMixin,
@@ -2963,7 +3118,7 @@ class DiscoveredDependency(
                 f"{', '.join(missing_values)}"
             )
 
-            project.add_error(error=message, model=cls, details=dependency_data)
+            project.add_warning(description=message, model=cls, details=dependency_data)
             return
 
         if not for_package:

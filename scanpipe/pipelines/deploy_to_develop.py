@@ -20,16 +20,18 @@
 # ScanCode.io is a free software code scanning tool from nexB Inc. and others.
 # Visit https://github.com/nexB/scancode.io for support and download.
 
+from scanpipe import pipes
 from scanpipe.pipelines import Pipeline
 from scanpipe.pipes import d2d
 from scanpipe.pipes import flag
+from scanpipe.pipes import matchcode
 from scanpipe.pipes import purldb
 from scanpipe.pipes import scancode
 
 
 class DeployToDevelop(Pipeline):
     """
-    Relate deploy and develop code trees.
+    Establish relationships between two code trees: deployment and development.
 
     This pipeline is expecting 2 archive files with "from-" and "to-" filename
     prefixes as inputs:
@@ -44,6 +46,7 @@ class DeployToDevelop(Pipeline):
             cls.extract_inputs_to_codebase_directory,
             cls.extract_archives_in_place,
             cls.collect_and_create_codebase_resources,
+            cls.fingerprint_codebase_directories,
             cls.flag_empty_files,
             cls.flag_ignored_resources,
             cls.map_about_files,
@@ -56,6 +59,7 @@ class DeployToDevelop(Pipeline):
             cls.map_javascript_post_purldb_match,
             cls.map_javascript_path,
             cls.map_javascript_colocation,
+            cls.map_thirdparty_npm_packages,
             cls.map_path,
             cls.flag_mapped_resources_archives_and_ignored_directories,
             cls.scan_mapped_from_for_files,
@@ -75,6 +79,7 @@ class DeployToDevelop(Pipeline):
         ".less",
         ".sass",
         ".soy",
+        ".class",
     ]
 
     def get_inputs(self):
@@ -108,7 +113,11 @@ class DeployToDevelop(Pipeline):
 
     def collect_and_create_codebase_resources(self):
         """Collect and create codebase resources."""
-        d2d.collect_and_create_codebase_resources(self.project)
+        pipes.collect_and_create_codebase_resources(self.project)
+
+    def fingerprint_codebase_directories(self):
+        """Compute directory fingerprints for matching"""
+        matchcode.fingerprint_codebase_directories(self.project, to_codebase_only=True)
 
     def map_about_files(self):
         """Map ``from/`` .ABOUT files to their related ``to/`` resources."""
@@ -138,19 +147,24 @@ class DeployToDevelop(Pipeline):
         d2d.map_javascript(project=self.project, logger=self.log)
 
     def match_purldb(self):
-        """Match selected files by extension in PurlDB."""
+        """Match selected files by extension and directories in PurlDB."""
         if not purldb.is_available():
             self.log("PurlDB is not available. Skipping.")
             return
 
-        d2d.match_purldb(
+        d2d.match_purldb_resources(
             project=self.project,
             extensions=self.purldb_package_extensions,
             matcher_func=d2d.match_purldb_package,
             logger=self.log,
         )
 
-        d2d.match_purldb(
+        d2d.match_purldb_directories(
+            project=self.project,
+            logger=self.log,
+        )
+
+        d2d.match_purldb_resources(
             project=self.project,
             extensions=self.purldb_resource_extensions,
             matcher_func=d2d.match_purldb_resource,
@@ -169,6 +183,10 @@ class DeployToDevelop(Pipeline):
         """Map JavaScript files based on neighborhood file mapping."""
         d2d.map_javascript_colocation(project=self.project, logger=self.log)
 
+    def map_thirdparty_npm_packages(self):
+        """Map thirdparty package using package.json metadata."""
+        d2d.map_thirdparty_npm_packages(project=self.project, logger=self.log)
+
     def map_path(self):
         """Map using path similarities."""
         d2d.map_path(project=self.project, logger=self.log)
@@ -182,4 +200,8 @@ class DeployToDevelop(Pipeline):
     def scan_mapped_from_for_files(self):
         """Scan mapped ``from/`` files for copyrights, licenses, emails, and urls."""
         scan_files = d2d.get_from_files_for_scanning(self.project.codebaseresources)
-        scancode.scan_for_files(self.project, scan_files)
+        scancode.scan_for_files(self.project, scan_files, progress_logger=self.log)
+
+    def create_local_files_packages(self):
+        """Create local-files packages for codebase resources not part of a package."""
+        d2d.create_local_files_packages(self.project)

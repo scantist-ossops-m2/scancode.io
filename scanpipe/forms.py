@@ -25,6 +25,8 @@ from django.apps import apps
 from django.core.exceptions import ValidationError
 
 import saneyaml
+from taggit.forms import TagField
+from taggit.forms import TagWidget
 
 from scanpipe.models import Project
 from scanpipe.pipes.fetch import fetch_urls
@@ -159,6 +161,19 @@ class AddPipelineForm(PipelineBaseForm):
 
     def save(self, project):
         self.handle_pipeline(project)
+        return project
+
+
+class AddLabelsForm(forms.Form):
+    labels = TagField(
+        label="Add labels to this project:",
+        widget=TagWidget(
+            attrs={"class": "input", "placeholder": "Comma-separated list of labels"}
+        ),
+    )
+
+    def save(self, project):
+        project.labels.add(*self.cleaned_data["labels"])
         return project
 
 
@@ -336,6 +351,12 @@ class ProjectCloneForm(forms.Form):
         initial=True,
         required=False,
         help_text="All project settings will be copied.",
+        widget=forms.CheckboxInput(attrs={"class": "checkbox mr-1"}),
+    )
+    copy_subscriptions = forms.BooleanField(
+        initial=True,
+        required=False,
+        help_text="All project webhook subscription will be copied.",
         widget=forms.CheckboxInput(attrs={"class": "checkbox mr-1"}),
     )
     execute_now = forms.BooleanField(

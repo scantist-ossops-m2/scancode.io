@@ -72,9 +72,9 @@ urlpatterns = [
         name="project_relations",
     ),
     path(
-        "project/<slug:slug>/errors/",
-        views.ProjectErrorListView.as_view(),
-        name="project_errors",
+        "project/<slug:slug>/messages/",
+        views.ProjectMessageListView.as_view(),
+        name="project_messages",
     ),
     path(
         "project/<slug:slug>/archive/",
@@ -142,14 +142,29 @@ urlpatterns = [
         name="project_delete_input",
     ),
     path(
-        "project/<slug:slug>/download_input/<str:input_name>/",
+        "project/<slug:slug>/download_input/<str:filename>/",
         views.download_input_view,
         name="project_download_input",
+    ),
+    path(
+        "project/<slug:slug>/download_output/<str:filename>/",
+        views.download_output_view,
+        name="project_download_output",
+    ),
+    path(
+        "project/<slug:slug>/delete_label/<str:label_name>/",
+        views.delete_label_view,
+        name="project_delete_label",
     ),
     path(
         "project/add/",
         views.ProjectCreateView.as_view(),
         name="project_add",
+    ),
+    path(
+        "project/action/",
+        views.ProjectActionView.as_view(),
+        name="project_action",
     ),
     path(
         "project/<slug:slug>/charts/",

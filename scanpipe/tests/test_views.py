@@ -22,6 +22,7 @@
 
 import json
 import shutil
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -153,6 +154,36 @@ class ScanPipeViewsTest(TestCase):
         expected = '<a href="?sort=" class="dropdown-item is-active">Newest</a>'
         self.assertContains(response, expected)
 
+    def test_scanpipe_views_project_actions_view(self):
+        url = reverse("project_action")
+        response = self.client.get(url)
+        self.assertEqual(405, response.status_code)
+
+        response = self.client.post(url)
+        self.assertEqual(404, response.status_code)
+
+        data = {"action": "does_not_exists"}
+        response = self.client.post(url, data=data)
+        self.assertEqual(404, response.status_code)
+
+        data = {"action": "delete"}
+        response = self.client.post(url, data=data)
+        self.assertEqual(404, response.status_code)
+
+        random_uuid = uuid.uuid4()
+        data = {
+            "action": "delete",
+            "selected_ids": f"{self.project1.uuid},{random_uuid}",
+        }
+        response = self.client.post(url, data=data, follow=True)
+        self.assertRedirects(response, reverse("project_list"))
+        expected = '<div class="message-body">1 projects have been delete.</div>'
+        self.assertContains(response, expected, html=True)
+        expected = (
+            f'<div class="message-body">Project {random_uuid} does not exist.</div>'
+        )
+        self.assertContains(response, expected, html=True)
+
     def test_scanpipe_views_project_details_is_archived(self):
         url = self.project1.get_absolute_url()
         expected1 = "WARNING: This project is archived and read-only."
@@ -201,6 +232,23 @@ class ScanPipeViewsTest(TestCase):
         copy_input(file_location, self.project1.input_path)
         filename = file_location.name
         url = reverse("project_download_input", args=[self.project1.slug, filename])
+        response = self.client.get(url)
+        self.assertTrue(response.getvalue().startswith(b"# SPDX-License-Identifier"))
+        self.assertEqual("application/octet-stream", response.headers["Content-Type"])
+        self.assertEqual(
+            'attachment; filename="notice.NOTICE"',
+            response.headers["Content-Disposition"],
+        )
+
+    def test_scanpipe_views_project_details_download_output_view(self):
+        url = reverse("project_download_output", args=[self.project1.slug, "file.zip"])
+        response = self.client.get(url)
+        self.assertEqual(404, response.status_code)
+
+        file_location = self.data_location / "notice.NOTICE"
+        copy_input(file_location, self.project1.output_path)
+        filename = file_location.name
+        url = reverse("project_download_output", args=[self.project1.slug, filename])
         response = self.client.get(url)
         self.assertTrue(response.getvalue().startswith(b"# SPDX-License-Identifier"))
         self.assertEqual("application/octet-stream", response.headers["Content-Type"])
@@ -261,10 +309,38 @@ class ScanPipeViewsTest(TestCase):
             "pipeline": "docker",
         }
         response = self.client.post(url, data, follow=True)
+        self.assertEqual(404, response.status_code)
+
+        data["add-pipeline-submit"] = ""
+        response = self.client.post(url, data, follow=True)
         self.assertContains(response, "Pipeline added.")
         run = self.project1.runs.get()
         self.assertEqual("docker", run.pipeline_name)
         self.assertIsNone(run.task_start_date)
+
+    def test_scanpipe_views_project_details_add_labels(self):
+        url = self.project1.get_absolute_url()
+        data = {
+            "labels": "label1, label2",
+        }
+        response = self.client.post(url, data, follow=True)
+        self.assertEqual(404, response.status_code)
+
+        data["add-labels-submit"] = ""
+        response = self.client.post(url, data, follow=True)
+        self.assertContains(response, "Label(s) added.")
+        self.assertEqual(["label1", "label2"], sorted(self.project1.labels.names()))
+
+    def test_scanpipe_views_project_delete_label(self):
+        self.project1.labels.add("label1")
+        url = reverse("project_delete_label", args=[self.project1.slug, "label1"])
+        response = self.client.get(url)
+        self.assertEqual(405, response.status_code)
+
+        response = self.client.post(url)
+        self.assertEqual(200, response.status_code)
+        self.assertEqual({}, response.json())
+        self.assertEqual([], list(self.project1.labels.names()))
 
     def test_scanpipe_views_project_details_charts_view(self):
         url = reverse("project_charts", args=[self.project1.slug])
@@ -567,6 +643,12 @@ class ScanPipeViewsTest(TestCase):
         self.assertEqual(404, response.status_code)
 
         run.set_task_stopped()
+        response = self.client.get(url)
+        self.assertEqual(404, response.status_code)
+
+        run.reset_task_values()
+        run2 = self.project1.add_pipeline("docker")
+        url = reverse("project_execute_pipeline", args=[self.project1.slug, run2.uuid])
         response = self.client.get(url)
         self.assertEqual(404, response.status_code)
 
