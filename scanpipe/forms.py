@@ -24,12 +24,13 @@ from django import forms
 from django.apps import apps
 from django.core.exceptions import ValidationError
 
-import saneyaml
 from taggit.forms import TagField
 from taggit.forms import TagWidget
 
 from scanpipe.models import Project
 from scanpipe.pipes.fetch import fetch_urls
+from scanpipe.policies import load_policies_yaml
+from scanpipe.policies import validate_policies
 
 scanpipe_app = apps.get_app_config("scanpipe")
 
@@ -221,24 +222,6 @@ class ListTextarea(forms.CharField):
         return value
 
 
-def validate_policies(policies_yaml):
-    """Return True if the provided ``policies_yaml`` is valid."""
-    try:
-        loaded_policies = saneyaml.load(policies_yaml)
-    except saneyaml.YAMLError as e:
-        raise ValidationError(f"Policies format error: {e}")
-
-    if not isinstance(loaded_policies, dict):
-        raise ValidationError("Policies format error.")
-
-    if "license_policies" not in loaded_policies:
-        raise ValidationError(
-            "The `license_policies` key is missing from provided policies data."
-        )
-
-    return True
-
-
 class ProjectSettingsForm(forms.ModelForm):
     settings_fields = [
         "extract_recursively",
@@ -329,7 +312,7 @@ class ProjectSettingsForm(forms.ModelForm):
 
     def clean_policies(self):
         if policies := self.cleaned_data.get("policies"):
-            validate_policies(policies)
+            validate_policies(load_policies_yaml(policies))
         return policies
 
 

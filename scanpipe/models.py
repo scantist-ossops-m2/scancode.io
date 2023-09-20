@@ -89,6 +89,8 @@ from taggit.models import TaggedItemBase
 from scancodeio import __version__ as scancodeio_version
 from scanpipe import humanize_time
 from scanpipe import tasks
+from scanpipe.policies import load_policies_file
+from scanpipe.policies import make_policy_index
 
 logger = logging.getLogger(__name__)
 scanpipe_app = apps.get_app_config("scanpipe")
@@ -745,14 +747,19 @@ class Project(UUIDPKModel, ExtraDataFieldMixin, UpdateMixin, models.Model):
         if config_directory.exists():
             return config_directory
 
+    def get_file_from_input_dir(self, filename):
+        """Return the ``filename`` file from the input/ directory if available."""
+        input_file = self.input_path / filename
+        if input_file.exists():
+            return input_file
+
     def get_input_config_file(self):
-        """
-        Return the ``scancode-config.yml`` file from the input/ directory if
-        available.
-        """
-        config_file = self.input_path / settings.SCANCODEIO_CONFIG_FILE
-        if config_file.exists():
-            return config_file
+        """Return the "scancode-config.yml" file from the input/ directory."""
+        return self.get_file_from_input_dir(settings.SCANCODEIO_CONFIG_FILE)
+
+    def get_input_policies_file(self):
+        """Return the "policies.yml" file from the input/ directory."""
+        return self.get_file_from_input_dir("policies.yml")
 
     def get_settings_as_yml(self):
         """Return the ``settings`` file content as yml, suitable for a config file."""
@@ -1937,7 +1944,7 @@ class ComplianceAlertMixin(models.Model):
         `codebase` is not used in this context but required for compatibility
         with the commoncode.resource.Codebase class API.
         """
-        if scanpipe_app.policies_enabled:
+        if scanpipe_app.policies_enabled:  # TODO: Replace this
             loaded_license_expression = getattr(self, "_loaded_license_expression", "")
             license_expression = getattr(self, self.license_expression_field, "")
             if license_expression != loaded_license_expression:
@@ -1947,21 +1954,43 @@ class ComplianceAlertMixin(models.Model):
 
         super().save(*args, **kwargs)
 
+    @cached_property
+    def policy_index(self):
+        """
+        Return the policy index for this project.
+
+        The policies are loaded from the following locations in that order:
+
+        1. the project local settings
+        2. the "policies.yml" file in the project input/ directory
+        3. the global app settings license policies
+        """
+        if policies := self.project.get_env("policies"):
+            return make_policy_index(policies)
+
+        elif policies_file := self.project.get_input_policies_file():
+            make_policy_index(load_policies_file(policies_file))
+
+        else:
+            return scanpipe_app.license_policies_index
+
     def compute_compliance_alert(self):
         """Compute and return the compliance_alert value from the licenses policies."""
         license_expression = getattr(self, self.license_expression_field, "")
         if not license_expression:
             return ""
 
-        alerts = []
-        policy_index = scanpipe_app.license_policies_index
+        policy_index = self.policy_index
+        if not policy_index:
+            return
 
         licensing = get_licensing()
         parsed = licensing.parse(license_expression, simple=True)
         license_keys = licensing.license_keys(parsed)
 
+        alerts = []
         for license_key in license_keys:
-            if policy := policy_index.get(license_key):
+            if policy := self.policy_index.get(license_key):
                 alerts.append(policy.get("compliance_alert") or self.Compliance.OK)
             else:
                 alerts.append(self.Compliance.MISSING)

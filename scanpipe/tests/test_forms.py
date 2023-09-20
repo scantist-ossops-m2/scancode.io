@@ -22,13 +22,11 @@
 
 from unittest import mock
 
-from django.core.exceptions import ValidationError
 from django.test import TestCase
 
 from scanpipe.forms import InputsBaseForm
 from scanpipe.forms import ProjectForm
 from scanpipe.forms import ProjectSettingsForm
-from scanpipe.forms import validate_policies
 from scanpipe.models import Project
 
 
@@ -117,21 +115,3 @@ class ScanPipeFormsTest(TestCase):
         }
         self.assertEqual(expected, project.settings)
         self.assertEqual(expected, project.get_env())
-
-    def test_scanpipe_forms_validate_policies(self):
-        with self.assertRaises(ValidationError) as error:
-            validate_policies("%!@")
-        expected = "Policies format error: while scanning a directive\n"
-        self.assertIn(expected, error.exception.message)
-
-        with self.assertRaises(ValidationError) as error:
-            validate_policies("- Wrong")
-        excepted = "Policies format error."
-        self.assertEqual(excepted, error.exception.message)
-
-        with self.assertRaises(ValidationError) as error:
-            validate_policies("version: 1")
-        excepted = "The `license_policies` key is missing from provided policies data."
-        self.assertEqual(excepted, error.exception.message)
-
-        self.assertTrue(excepted, validate_policies("license_policies: 1"))

@@ -622,6 +622,16 @@ class ScanPipeModelsTest(TestCase):
         self.project1.labels.clear()
         self.assertEqual(0, UUIDTaggedItem.objects.count())
 
+    def test_scanpipe_project_get_input_policies_file(self):
+        self.assertIsNone(self.project1.get_input_policies_file())
+        policies_file = self.project1.input_path / "policies.yml"
+        policies_file.touch()
+        policies_file_location = str(self.project1.get_input_policies_file())
+        self.assertTrue(policies_file_location.endswith("input/policies.yml"))
+
+    def test_scanpipe_project_get_policy_index(self):
+        pass
+
     def test_scanpipe_model_update_mixin(self):
         resource = CodebaseResource.objects.create(project=self.project1, path="file")
         self.assertEqual("", resource.status)
