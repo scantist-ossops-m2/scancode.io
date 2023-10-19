@@ -794,7 +794,8 @@ def match_purldb_directories_post_process(project, logger=None):
     resources_by_filenames_by_purls = defaultdict(lambda: defaultdict(list))
     for purl, resources in resources_by_purl.items():
         for resource in resources:
-            resources_by_filenames_by_purls[purl][resource.name].append(resource)
+            resource_name = resource.get('name')
+            resources_by_filenames_by_purls[purl][resource_name].append(resource)
 
     # 3.2. for a directory in our codebase that was matched to a package, look
     # up that directory in the package resources mapping, get the sha1's of the
