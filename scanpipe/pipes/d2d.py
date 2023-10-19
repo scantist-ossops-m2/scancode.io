@@ -815,10 +815,11 @@ def match_purldb_directories_post_process(project, logger=None):
                 directory_path = directory.get('path')
 
                 directory_descendants = []
-                for _, resource in resources_by_filenames_by_purls[package.purl].items():
-                    resource_path = resource.get('path')
-                    if resource_path.startswith(directory_path):
-                        directory_descendants.append(resource)
+                for _, resources in resources_by_filenames_by_purls[package.purl].items():
+                    for resource in resources:
+                        resource_path = resource.get('path')
+                        if resource_path.startswith(directory_path):
+                            directory_descendants.append(resource)
 
                 directory_descendants_sha1s = [r.get('sha1') for r in directory_descendants if r.get('type') == 'file']
 
@@ -834,7 +835,7 @@ def match_purldb_directories_post_process(project, logger=None):
         # Delete package match from the project
         # TODO: needs more testing to see if this works
         if best_matched_package:
-            directory.discovered_packages.exclude(pk=best_matched_package.pk).delete()
+            matched_directory.discovered_packages.exclude(pk=best_matched_package.pk).delete()
 
 
 def map_javascript(project, logger=None):
