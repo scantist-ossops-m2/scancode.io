@@ -22,9 +22,9 @@
 
 from scanpipe.pipelines import Pipeline
 from scanpipe.pipes import d2d
-from scanpipe.pipes import flag
+from scanpipe.pipes import scancode
 from scanpipe.pipes import purldb
-
+from scanpipe import pipes
 
 class MatchToPurlDB(Pipeline):
     """
@@ -34,12 +34,65 @@ class MatchToPurlDB(Pipeline):
     @classmethod
     def steps(cls):
         return (
+            cls.get_inputs,
+            cls.extract_inputs_to_codebase_directory,
+            cls.extract_archives_in_place,
+            cls.collect_and_create_codebase_resources,
             cls.match_archives_to_purldb_packages,
             # cls.match_archives_to_purldb_resources,
             cls.match_resources_to_purldb,
             cls.pick_best_packages,
             cls.remove_packages_without_resources,
         )
+
+    purldb_resource_extensions = [
+        ".map",
+        ".js",
+        ".mjs",
+        ".ts",
+        ".d.ts",
+        ".jsx",
+        ".tsx",
+        ".css",
+        ".scss",
+        ".less",
+        ".sass",
+        ".soy",
+        ".class",
+    ]
+
+    def get_inputs(self):
+        """Locate the ``from`` and ``to`` input files."""
+        self.from_files, self.to_files = d2d.get_inputs(self.project)
+
+    def extract_inputs_to_codebase_directory(self):
+        """Extract input files to the project's codebase/ directory."""
+        inputs_with_codebase_path_destination = [
+            (self.from_files, self.project.codebase_path / d2d.FROM),
+            (self.to_files, self.project.codebase_path / d2d.TO),
+        ]
+
+        errors = []
+        for input_files, codebase_path in inputs_with_codebase_path_destination:
+            for input_file_path in input_files:
+                errors += scancode.extract_archive(input_file_path, codebase_path)
+
+        if errors:
+            self.add_error("\n".join(errors))
+
+    def extract_archives_in_place(self):
+        """Extract recursively from* and to* archives in place with extractcode."""
+        extract_errors = scancode.extract_archives(
+            self.project.codebase_path,
+            recurse=self.env.get("extract_recursively", True),
+        )
+
+        if extract_errors:
+            self.add_error("\n".join(extract_errors))
+
+    def collect_and_create_codebase_resources(self):
+        """Collect and create codebase resources."""
+        pipes.collect_and_create_codebase_resources(self.project)
 
     def match_archives_to_purldb_packages(self):
         """Match archives to PurlDB package archives."""
@@ -73,16 +126,16 @@ class MatchToPurlDB(Pipeline):
             self.log("PurlDB is not available. Skipping.")
             return
 
-        d2d.match_purldb_resources(
+        match_purldb_resources(
             project=self.project,
-            extensions=None,
+            is_archive=False,
             matcher_func=d2d.match_purldb_resource,
             logger=self.log,
         )
 
-    def pick_best_package(self):
+    def pick_best_packages(self):
         """Choose the best package for PurlDB matched resources."""
-        pick_best_package(self.project, logger=self.log)
+        pick_best_packages(self.project, logger=self.log)
 
     def remove_packages_without_resources(self):
         """Remove packages without any resources."""
@@ -125,75 +178,39 @@ def match_purldb_resources(
     )
 
 
-def pick_best_package(project, logger=None):
+def pick_best_packages(project, logger=None):
     """Choose the best package for PurlDB matched resources."""
-    to_extract_directories = (
-        project.codebaseresources.directories()
-        .to_codebase()
-        .filter(path__regex=r"^.*-extract$")
-    )
+    """
+    for each group in "grouped by package ignoring versions":
+    for each package in group:
+        if package.resources all contained in any other package of the group:
+        remove the package - resource relationships
 
-    to_resources = project.codebaseresources.files().filter(
-        status=flag.MATCHED_TO_PURLDB_RESOURCE
-    )
+    11:20
+    Some examples of groups
+        pkg:maven/com.liferay/com.liferay.blogs.api@5.2.0
+        pkg:maven/com.liferay/com.liferay.blogs.api@5.0.0
+        pkg:maven/com.liferay/com.liferay.blogs.api@5.1.0
+        pkg:maven/com.liferay/com.liferay.bulk.selection.api@1.1.0
+        pkg:maven/com.liferay/com.liferay.bulk.selection.api@1.0.0
+        pkg:maven/com.liferay/com.liferay.message.boards.api@5.1.0
+        pkg:maven/com.liferay/com.liferay.message.boards.api@5.2.0
+        pkg:maven/com.liferay/com.liferay.message.boards.api@5.0.0
+    """
+    project_packages_namespaces_and_names = project.discoveredpackages.values_list('namespace', 'name')
+    project_packages_namespaces_and_names = set(project_packages_namespaces_and_names)
 
-    resource_count = to_extract_directories.count()
+    for namespace, name in project_packages_namespaces_and_names:
+        related_packages = project.discoveredpackages.filter(namespace=namespace, name=name)
 
-    if logger:
-        logger(
-            f"Refining matching for {resource_count:,d} "
-            f"{flag.MATCHED_TO_PURLDB_RESOURCE} archives."
-        )
+        resource_paths_by_package = {}
+        for related_package in related_packages:
+            related_resource_paths = related_package.resources.all().values_list('path', flat=True)
+            resource_paths_by_package[related_package] = set(related_resource_paths)
 
-    resource_iterator = to_extract_directories.iterator(chunk_size=2000)
-    progress = LoopProgress(resource_count, logger)
-    map_count = 0
+        resource_paths = resource_paths_by_package.values()
+        intersection = set.intersection(*resource_paths)
 
-    for directory in progress.iter(resource_iterator):
-        map_count += _match_purldb_resources_post_process(
-            directory, to_extract_directories, to_resources
-        )
-
-    logger(f"{map_count:,d} resource matching refined")
-
-
-def _match_purldb_resources_post_process(
-    directory_path, to_extract_directories, to_resources
-):
-    # Skip, if the extract directory contains nested archive.
-    nested_archive = to_extract_directories.filter(
-        path__regex=rf"^{directory_path}.*-extract$"
-    ).count()
-
-    if nested_archive > 0:
-        return 0
-
-    interesting_codebase_resources = to_resources.filter(
-        path__startswith=directory_path
-    ).filter(status=flag.MATCHED_TO_PURLDB_RESOURCE)
-
-    if not interesting_codebase_resources:
-        return 0
-
-    first_codebase_resource = interesting_codebase_resources.first()
-    common_discovered_packages = first_codebase_resource.discovered_packages.all()
-
-    for resource in interesting_codebase_resources[1:]:
-        common_discovered_packages = common_discovered_packages.filter(
-            id__in=resource.discovered_packages.values_list("id", flat=True)
-        )
-
-    common_discovered_packages = list(common_discovered_packages)
-
-    if not common_discovered_packages:
-        return 0
-
-    for resource in interesting_codebase_resources:
-        resource.discovered_packages.clear()
-
-    for package in common_discovered_packages:
-        package.add_resources(list(interesting_codebase_resources))
-
-    # TODO: remove this debug status
-    interesting_codebase_resources.update(status="matched-to-purldb-resource-pp")
-    return interesting_codebase_resources.count()
+        for package, resource_paths in resource_paths_by_package.items():
+            if resource_paths == intersection:
+                package.resources.clear()
