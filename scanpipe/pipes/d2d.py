@@ -521,8 +521,6 @@ def match_purldb_package(
         sha1_list=sha1_list,
         enhance_package_data=enhance_package_data,
     ):
-        # filter results:
-        results = oldest_packages(results)
         # Process matched Package data
         for package_data in results:
             sha1 = package_data["sha1"]
