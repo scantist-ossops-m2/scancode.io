@@ -203,14 +203,20 @@ def pick_best_packages(project, logger=None):
     for namespace, name in project_packages_namespaces_and_names:
         related_packages = project.discoveredpackages.filter(namespace=namespace, name=name)
 
+        main_package = None
+        main_package_resources_count = 0
         resource_paths_by_package = {}
         for related_package in related_packages:
-            related_resource_paths = related_package.resources.all().values_list('path', flat=True)
+            related_resource_paths = [r.path for r in related_package.resources]
+            related_resource_paths_count = len(related_resource_paths)
+            if related_resource_paths_count > main_package_resources_count:
+                main_package_resources_count = related_resource_paths_count
+                main_package = related_package
             resource_paths_by_package[related_package] = set(related_resource_paths)
 
-        resource_paths = resource_paths_by_package.values()
-        intersection = set.intersection(*resource_paths)
+        main_package_resouce_paths = resource_paths_by_package[main_package]
 
-        for package, resource_paths in resource_paths_by_package.items():
-            if resource_paths == intersection:
-                package.resources.clear()
+        for related_package in related_packages.exclude(pk=main_package.pk):
+            resource_paths = resource_paths_by_package[related_package]
+            if resource_paths.issubset(main_package_resouce_paths):
+                related_package.codebase_resources.clear()
