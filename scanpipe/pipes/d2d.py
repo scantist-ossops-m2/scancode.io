@@ -35,7 +35,7 @@ from django.db.models.expressions import Subquery
 from django.db.models.functions import Concat
 from django.template.defaultfilters import pluralize
 
-from commoncode.paths import common_prefix, common_path_suffix
+from commoncode.paths import common_prefix
 from extractcode import EXTRACT_SUFFIX
 from packagedcode.npm import NpmPackageJsonHandler
 from summarycode.classify import LEGAL_STARTS_ENDS
@@ -587,7 +587,7 @@ def most_similar_match(directory_matches):
     highest_similarity_score = 0
     most_similar_match = None
     for match in directory_matches:
-        similarity_score = match.get('similarity_score')
+        similarity_score = match.get("similarity_score")
         if similarity_score > highest_similarity_score:
             most_similar_match = match
             highest_similarity_score = similarity_score
@@ -787,12 +787,13 @@ def match_purldb_directories_post_process(project, logger=None):
 
     # 3. From the top directory, compare how many package resources we have to
     #    the total number of package resources for each package matched
-    # TODO: figure out how to normalize paths between our codebase and what we got from purldb
+    # TODO: figure out how to normalize paths between our codebase and what
+    #       we got from purldb
     # 3.1. create a mapping of paths by filenames
     resources_by_filenames_by_purls = defaultdict(lambda: defaultdict(list))
     for purl, resources in resources_by_purl.items():
         for resource in resources:
-            resource_name = resource.get('name')
+            resource_name = resource.get("name")
             resources_by_filenames_by_purls[purl][resource_name].append(resource)
 
     # 3.2. for a directory in our codebase that was matched to a package, look
@@ -802,28 +803,42 @@ def match_purldb_directories_post_process(project, logger=None):
     for matched_directory in matched_directories.iterator():
         matched_directory.refresh_from_db()
         matched_directory_descendants = matched_directory.descendants()
-        matched_directory_descendants_sha1s = [r.sha1 for r in matched_directory_descendants if r.is_file]
+        matched_directory_descendants_sha1s = [
+            r.sha1 for r in matched_directory_descendants if r.is_file
+        ]
 
         best_matched_package = None
         best_matched_package_percentage = 0.0
         for package in matched_directory.discovered_packages.all():
-            directories = resources_by_filenames_by_purls[package.purl][matched_directory.name]
+            directories = resources_by_filenames_by_purls[package.purl][
+                matched_directory.name
+            ]
 
             for directory in directories:
-                directory_path = directory.get('path')
+                directory_path = directory.get("path")
 
                 directory_descendants = []
-                for _, resources in resources_by_filenames_by_purls[package.purl].items():
+                for _, resources in resources_by_filenames_by_purls[
+                    package.purl
+                ].items():
                     for resource in resources:
-                        resource_path = resource.get('path')
+                        resource_path = resource.get("path")
                         if resource_path.startswith(directory_path):
                             directory_descendants.append(resource)
 
-                directory_descendants_sha1s = [r.get('sha1') for r in directory_descendants if r.get('type') == 'file']
+                directory_descendants_sha1s = [
+                    r.get("sha1")
+                    for r in directory_descendants
+                    if r.get("type") == "file"
+                ]
 
                 # Do comparisons
-                common_sha1s = common_entries(matched_directory_descendants_sha1s, directory_descendants_sha1s)
-                package_resource_percentage_match =  len(common_sha1s) / len(directory_descendants_sha1s)
+                common_sha1s = common_entries(
+                    matched_directory_descendants_sha1s, directory_descendants_sha1s
+                )
+                package_resource_percentage_match = len(common_sha1s) / len(
+                    directory_descendants_sha1s
+                )
 
                 # pick best score
                 if package_resource_percentage_match > best_matched_package_percentage:
@@ -833,7 +848,9 @@ def match_purldb_directories_post_process(project, logger=None):
         # Delete package match from the project
         # TODO: needs more testing to see if this works
         if best_matched_package:
-            matched_directory.discovered_packages.exclude(pk=best_matched_package.pk).delete()
+            matched_directory.discovered_packages.exclude(
+                pk=best_matched_package.pk
+            ).delete()
 
 
 def map_javascript(project, logger=None):
@@ -1236,7 +1253,9 @@ def flag_processed_archives(project):
     have statuses. If so, it updates the status of the package archive to
     "archive-processed".
     """
-    to_resources = project.codebaseresources.all().to_codebase().no_status()
+    to_resources = (
+        project.codebaseresources.all().to_codebase().no_status().order_by("-path")
+    )
 
     for archive_resource in to_resources.archives():
         extract_path = archive_resource.path + EXTRACT_SUFFIX
@@ -1506,6 +1525,26 @@ def save_scan_legal_file_results(codebase_resource, scan_results, scan_errors):
     codebase_resource.set_scan_results(scan_results, status)
 
 
+def flag_whitespace_files(project):
+    """
+    Flag whitespace files with size less than or equal
+    to 100 byte as ignored.
+    """
+    resources = project.codebaseresources.files().no_status().filter(size__lte=100)
+
+    # Set of whitespace characters.
+    whitespace_set = set(b" \n\r\t\f\b")
+
+    for resource in resources:
+        binary_data = open(resource.location, "rb").read()
+        binary_set = set(binary_data)
+        non_whitespace_bytes = binary_set - whitespace_set
+
+        # If resource contains only whitespace characters.
+        if not non_whitespace_bytes:
+            resource.update(status=flag.IGNORED_WHITESPACE_FILE)
+
+
 def match_purldb_resources_post_process(project, logger=None):
     """Choose the best package for PurlDB matched resources."""
     to_extract_directories = (
@@ -1535,7 +1574,7 @@ def match_purldb_resources_post_process(project, logger=None):
             directory, to_extract_directories, to_resources
         )
 
-    logger(f"{map_count:,d} resource matching refined")
+    logger(f"{map_count:,d} resource processed")
 
 
 def _match_purldb_resources_post_process(
@@ -1560,7 +1599,7 @@ def _match_purldb_resources_post_process(
             else:
                 packages_map[package] = [resource]
 
-    # Rank the packages by most number of matched resources
+    # Rank the packages by most number of matched resources.
     ranked_packages = dict(
         sorted(packages_map.items(), key=lambda item: len(item[1]), reverse=True)
     )
@@ -1569,16 +1608,12 @@ def _match_purldb_resources_post_process(
         resource.discovered_packages.clear()
 
     for package, resources in ranked_packages.items():
-        empty_resources = [
+        unmapped_resources = [
             resource
             for resource in resources
             if not resource.discovered_packages.exists()
         ]
-        if empty_resources:
-            package.add_resources(empty_resources)
+        if unmapped_resources:
+            package.add_resources(unmapped_resources)
 
-    count = interesting_codebase_resources.count()
-
-    # TODO: remove this debug status
-    interesting_codebase_resources.update(status="matched-to-purldb-resource-pp")
-    return count
+    return interesting_codebase_resources.count()

@@ -8,7 +8,6 @@
         {
           "pipeline_name": "deploy_to_develop",
           "status": "not_started",
-          "description": "Establish relationships between two code trees: deployment and development.",
           "scancodeio_version": "",
           "task_id": null,
           "task_start_date": null,
@@ -76,7 +75,6 @@
       "subpath": "",
       "tag": "",
       "primary_language": "",
-      "description": "",
       "release_date": null,
       "parties": [],
       "keywords": [],
@@ -580,10 +578,7 @@
       "for_packages": [],
       "emails": [],
       "urls": [],
-      "extra_data": {
-        "directory_content": "00000015f6b057b61fd72b9c3429b9d20282eedf",
-        "directory_structure": "00000015d76554188eea461e1a07cfb2adbb3c15"
-      }
+      "extra_data": {}
     },
     {
       "path": "to/flume-ng-node-1.9.0.jar",
@@ -649,10 +644,7 @@
       ],
       "emails": [],
       "urls": [],
-      "extra_data": {
-        "directory_content": "00000014769057b41b550b8c2429b9d20282eedb",
-        "directory_structure": "000000148220522c471263822fe986a2864cd08b"
-      }
+      "extra_data": {}
     },
     {
       "path": "to/flume-ng-node-1.9.0.jar-extract/META-INF",
@@ -685,10 +677,7 @@
       ],
       "emails": [],
       "urls": [],
-      "extra_data": {
-        "directory_content": "000000050112d33b752de62e0265b8d6866ae293",
-        "directory_structure": "000000057863b0a9ab89d9bc4811a2d6144cf9ab"
-      }
+      "extra_data": {}
     },
     {
       "path": "to/flume-ng-node-1.9.0.jar-extract/META-INF/DEPENDENCIES",
@@ -820,10 +809,7 @@
       ],
       "emails": [],
       "urls": [],
-      "extra_data": {
-        "directory_content": "000000028100c33213b86008020528d44042801b",
-        "directory_structure": "00000002084a08825003091489160ca815610801"
-      }
+      "extra_data": {}
     },
     {
       "path": "to/flume-ng-node-1.9.0.jar-extract/META-INF/maven/org.apache.flume",
@@ -856,10 +842,7 @@
       ],
       "emails": [],
       "urls": [],
-      "extra_data": {
-        "directory_content": "000000028100c33213b86008020528d44042801b",
-        "directory_structure": "00000002121544006009e0c10381209a1212197c"
-      }
+      "extra_data": {}
     },
     {
       "path": "to/flume-ng-node-1.9.0.jar-extract/META-INF/maven/org.apache.flume/flume-ng-node",
@@ -892,10 +875,7 @@
       ],
       "emails": [],
       "urls": [],
-      "extra_data": {
-        "directory_content": "000000028100c33213b86008020528d44042801b",
-        "directory_structure": "0000000202a00930141226001804441005044108"
-      }
+      "extra_data": {}
     },
     {
       "path": "to/flume-ng-node-1.9.0.jar-extract/META-INF/maven/org.apache.flume/flume-ng-node/pom.properties",
@@ -994,10 +974,7 @@
       ],
       "emails": [],
       "urls": [],
-      "extra_data": {
-        "directory_content": "0000000ffeb15fb49bd31b9c3429add31282eedf",
-        "directory_structure": "0000000f18268fe56bf99797b01199f7ce38e313"
-      }
+      "extra_data": {}
     },
     {
       "path": "to/flume-ng-node-1.9.0.jar-extract/org/apache",
@@ -1030,10 +1007,7 @@
       ],
       "emails": [],
       "urls": [],
-      "extra_data": {
-        "directory_content": "0000000ffeb15fb49bd31b9c3429add31282eedf",
-        "directory_structure": "0000000ff089e2d03d8f3196d03a490028be4485"
-      }
+      "extra_data": {}
     },
     {
       "path": "to/flume-ng-node-1.9.0.jar-extract/org/apache/flume",
@@ -1066,10 +1040,7 @@
       ],
       "emails": [],
       "urls": [],
-      "extra_data": {
-        "directory_content": "0000000ffeb15fb49bd31b9c3429add31282eedf",
-        "directory_structure": "0000000f25b5ec0e0491dcbddf370d52b70b5907"
-      }
+      "extra_data": {}
     },
     {
       "path": "to/flume-ng-node-1.9.0.jar-extract/org/apache/flume/node",
@@ -1102,10 +1073,7 @@
       ],
       "emails": [],
       "urls": [],
-      "extra_data": {
-        "directory_content": "0000000ffeb15fb49bd31b9c3429add31282eedf",
-        "directory_structure": "0000000f22941765f1862ea1a6b7eabafce8986a"
-      }
+      "extra_data": {}
     },
     {
       "path": "to/flume-ng-node-1.9.0.jar-extract/org/apache/flume/node/AbstractConfigurationProvider$ChannelComponent.class",

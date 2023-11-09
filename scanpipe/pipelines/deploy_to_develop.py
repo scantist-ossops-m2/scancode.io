@@ -142,10 +142,9 @@ class DeployToDevelop(Pipeline):
     def flag_whitespace_files(self):
         """
         Flag whitespace files with size less than or equal
-        to 1 byte as ignored.
+        to 100 byte as ignored.
         """
-        qs = self.project.codebaseresources.files().filter(size__lte=1)
-        qs.update(status=flag.IGNORED_WHITESPACE_FILE)
+        d2d.flag_whitespace_files(project=self.project)
 
     def map_about_files(self):
         """Map ``from/`` .ABOUT files to their related ``to/`` resources."""
@@ -319,11 +318,15 @@ def pick_best_packages(project, logger=None):
         pkg:maven/com.liferay/com.liferay.message.boards.api@5.2.0
         pkg:maven/com.liferay/com.liferay.message.boards.api@5.0.0
     """
-    project_packages_namespaces_and_names = project.discoveredpackages.values_list('namespace', 'name')
+    project_packages_namespaces_and_names = project.discoveredpackages.values_list(
+        "namespace", "name"
+    )
     project_packages_namespaces_and_names = set(project_packages_namespaces_and_names)
 
     for namespace, name in project_packages_namespaces_and_names:
-        related_packages = project.discoveredpackages.filter(namespace=namespace, name=name)
+        related_packages = project.discoveredpackages.filter(
+            namespace=namespace, name=name
+        )
 
         main_package = None
         main_package_resources_count = 0
