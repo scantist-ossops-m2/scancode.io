@@ -32,10 +32,10 @@ from packageurl import PackageURL
 from univers.version_range import RANGE_CLASS_BY_SCHEMES
 from univers.version_range import InvalidVersionRange
 
+from scanpipe.models import AbstractTaskFieldsModel
 from scanpipe.pipes import LoopProgress
 from scanpipe.pipes import flag
 from scanpipe.pipes.output import to_json
-from scanpipe.models import AbstractTaskFieldsModel
 
 
 class PurlDBException(Exception):
