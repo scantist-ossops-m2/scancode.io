@@ -302,7 +302,7 @@ def validate_project_inputs(pipelines, input_files, copy_from):
     return pipelines_data, input_files_data
 
 
-def handle_input_files(project, input_files_data, command=None):
+def handle_input_files(project, input_files_data, command=None, **kwargs):
     """Copy provided `input_files` to the project's `input` directory."""
     copied = []
 
@@ -317,13 +317,18 @@ def handle_input_files(project, input_files_data, command=None):
         )
 
     if command:
-        msg = f"File{pluralize(copied)} copied to the project inputs directory:"
-        command.stdout.write(msg, command.style.SUCCESS)
-        msg = "\n".join(["- " + filename for filename in copied])
-        command.stdout.write(msg)
+        msg1 = f"File{pluralize(copied)} copied to the project inputs directory:"
+        msg2 = "\n".join(["- " + filename for filename in copied])
+        stdout = kwargs.get("stdout")
+        if stdout:
+            stdout.write(msg1)
+            stdout.write(msg2)
+        else:
+            command.stdout.write(msg1, command.style.SUCCESS)
+            command.stdout.write(msg2)
 
 
-def handle_input_urls(project, input_urls, command=None):
+def handle_input_urls(project, input_urls, command=None, **kwargs):
     """
     Fetch provided `input_urls` and stores it in the project's `input`
     directory.
@@ -332,46 +337,60 @@ def handle_input_urls(project, input_urls, command=None):
 
     if downloads:
         project.add_downloads(downloads)
-        msg = "File(s) downloaded to the project inputs directory:"
         if command:
-            command.stdout.write(msg, command.style.SUCCESS)
-            msg = "\n".join(["- " + downloaded.filename for downloaded in downloads])
-            command.stdout.write(msg)
+            msg1 = "File(s) downloaded to the project inputs directory:"
+            msg2 = "\n".join(["- " + downloaded.filename for downloaded in downloads])
+            stdout = kwargs.get("stdout")
+            if stdout:
+                stdout.write(msg1)
+                stdout.write(msg2)
+            else:
+                command.stdout.write(msg1, command.style.SUCCESS)
+                command.stdout.write(msg2)
 
     if errors and command:
         msg = "Could not fetch URL(s):\n"
         msg += "\n".join(["- " + url for url in errors])
-        command.stderr.write(msg)
+        stderr = kwargs.get("stderr")
+        if stderr:
+            stderr.write(msg)
+        else:
+            command.stderr.write(msg)
 
 
-def handle_copy_codebase(project, copy_from, command=None):
+def handle_copy_codebase(project, copy_from, command=None, **kwargs):
     """Copy `codebase_path` tree to the project's `codebase` directory."""
     project_codebase = project.codebase_path
     if command:
         msg = f"{copy_from} content copied in {project_codebase}"
-        command.stdout.write(msg, command.style.SUCCESS)
+        stdout = kwargs.get("stdout")
+        if stdout:
+            stdout.write(msg)
+        else:
+            command.stdout.write(msg, command.style.SUCCESS)
     shutil.copytree(src=copy_from, dst=project_codebase, dirs_exist_ok=True)
 
 
 def add_project_inputs(
-    project, pipelines_data, input_files_data, input_urls, copy_from, command=None
+    project, pipelines_data, input_files_data, input_urls, copy_from, command=None, **kwargs,
 ):
     for pipeline_name, selected_groups in pipelines_data.items():
         project.add_pipeline(pipeline_name, selected_groups=selected_groups)
 
     if input_files_data:
         handle_input_files(
-            project=project, input_files_data=input_files_data, command=command
+            project=project, input_files_data=input_files_data, command=command, **kwargs,
         )
 
     if input_urls:
-        handle_input_urls(project=project, input_urls=input_urls, command=command)
+        handle_input_urls(project=project, input_urls=input_urls, command=command, **kwargs)
 
     if copy_from:
-        handle_copy_codebase(project=project, copy_from=copy_from, command=command)
+        handle_copy_codebase(project=project, copy_from=copy_from, command=command, **kwargs)
 
 
-def execute_project(project, run_async=False, command=None):
+def execute_project(project, run_async=False, command=None, **kwargs):
+    stdout = kwargs.get("stdout")
     run = project.get_next_run()
 
     if not run:
@@ -385,9 +404,16 @@ def execute_project(project, run_async=False, command=None):
         run.start()
         if command:
             msg = f"{run.pipeline_name} added to the tasks queue for execution."
-            command.stdout.write(msg, command.style.SUCCESS)
+            if stdout:
+                stdout.write(msg)
+            else:
+                command.stdout.write(msg, command.style.SUCCESS)
     else:
-        command.stdout.write(f"Start the {run.pipeline_name} pipeline execution...")
+        msg = f"Start the {run.pipeline_name} pipeline execution..."
+        if stdout:
+            stdout.write(msg)
+        else:
+            command.stdout.write(msg)
 
         try:
             tasks.execute_pipeline_task(run.pk)
@@ -402,7 +428,10 @@ def execute_project(project, run_async=False, command=None):
 
         if run.task_succeeded and command:
             msg = f"{run.pipeline_name} successfully executed on " f"project {project}"
-            command.stdout.write(msg, command.style.SUCCESS)
+            if stdout:
+                stdout.write(msg)
+            else:
+                command.stdout.write(msg, command.style.SUCCESS)
         else:
             msg = f"Error during {run.pipeline_name} execution:\n{run.task_output}"
             raise CommandError(msg)
@@ -418,6 +447,7 @@ def create_project(
     execute=False,
     run_async=False,
     command=None,
+    **kwargs,
 ):
     if execute and not pipelines:
         raise CommandError("The execute argument requires one or more pipelines.")
@@ -441,8 +471,12 @@ def create_project(
         command.project = project
 
     if command:
+        stdout = kwargs.get('stdout')
         msg = f"Project {name} created with work directory {project.work_directory}"
-        command.stdout.write(msg, command.style.SUCCESS)
+        if stdout:
+            stdout.write(msg)
+        else:
+            command.stdout.write(msg, command.style.SUCCESS)
 
     add_project_inputs(
         project=project,
@@ -451,10 +485,11 @@ def create_project(
         input_urls=input_urls,
         copy_from=copy_from,
         command=command,
+        **kwargs,
     )
 
     if execute:
-        execute_project(project=project, run_async=run_async, command=command)
+        execute_project(project=project, run_async=run_async, command=command, **kwargs)
 
     return project
 
@@ -487,6 +522,7 @@ class CreateProjectCommandMixin(ExecuteProjectCommandMixin):
         notes="",
         execute=False,
         run_async=False,
+        **kwargs,
     ):
         return create_project(
             name=name,
@@ -498,4 +534,5 @@ class CreateProjectCommandMixin(ExecuteProjectCommandMixin):
             execute=execute,
             run_async=run_async,
             command=self,
+            **kwargs,
         )

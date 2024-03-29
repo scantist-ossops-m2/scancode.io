@@ -800,7 +800,9 @@ class ScanPipeManagementCommandMixinTest(TestCase):
         with self.assertRaisesMessage(CommandError, expected):
             self.create_project_command.create_project(name="")
 
-        project = self.create_project_command.create_project(name="my_project")
+        out = StringIO()
+        project = self.create_project_command.create_project(name="my_project", stdout=out)
+        self.assertIn("Project my_project created", out.getvalue())
         self.assertTrue("my_project", project.name)
 
         expected = "Project with this Name already exists."
@@ -810,10 +812,12 @@ class ScanPipeManagementCommandMixinTest(TestCase):
     def test_scanpipe_management_command_mixin_create_project_notes(
         self,
     ):
+        out = StringIO()
         notes = "Some notes about my project"
         project = self.create_project_command.create_project(
-            name="my_project", notes=notes
+            name="my_project", notes=notes, stdout=out
         )
+        self.assertIn("Project my_project created", out.getvalue())
         self.assertEqual(notes, project.notes)
 
     def test_scanpipe_management_command_mixin_create_project_pipelines(
@@ -830,9 +834,11 @@ class ScanPipeManagementCommandMixinTest(TestCase):
             "analyze_root_filesystem_or_vm_image:group1,group2",
             "scan_package",
         ]
+        out = StringIO()
         project = self.create_project_command.create_project(
-            name="my_project", pipelines=pipelines
+            name="my_project", pipelines=pipelines, stdout=out
         )
+        self.assertIn("Project my_project created", out.getvalue())
         expected = [
             self.pipeline_name,
             "analyze_root_filesystem_or_vm_image",
@@ -856,9 +862,11 @@ class ScanPipeManagementCommandMixinTest(TestCase):
             str(parent_path / "test_commands.py"),
             str(parent_path / "test_models.py:tag"),
         ]
+        out = StringIO()
         project = self.create_project_command.create_project(
-            name="my_project", input_files=input_files
+            name="my_project", input_files=input_files, stdout=out,
         )
+        self.assertIn("Project my_project created", out.getvalue())
         expected = sorted(["test_commands.py", "test_models.py"])
         self.assertEqual(expected, sorted(project.input_files))
         tagged_source = project.inputsources.get(filename="test_models.py")
@@ -871,14 +879,19 @@ class ScanPipeManagementCommandMixinTest(TestCase):
         with self.assertRaisesMessage(CommandError, expected):
             self.create_project_command.create_project(name="my_project", execute=True)
 
+        out = StringIO()
         pipeline = "load_inventory"
         with mock.patch("scanpipe.tasks.execute_pipeline_task", task_success):
             project = self.create_project_command.create_project(
-                name="my_project", pipelines=[pipeline], execute=True
+                name="my_project", pipelines=[pipeline], execute=True, stdout=out,
             )
+        self.assertIn("Project my_project created", out.getvalue())
+        self.assertIn(f"Start the {pipeline} pipeline execution...", out.getvalue())
+        self.assertIn("successfully executed on project my_project", out.getvalue())
         run = project.runs.first()
         self.assertTrue(run.task_succeeded)
 
+        out = StringIO()
         expected = "SCANCODEIO_ASYNC=False is not compatible with --async option."
         with override_settings(SCANCODEIO_ASYNC=False):
             with self.assertRaisesMessage(CommandError, expected):
@@ -887,4 +900,8 @@ class ScanPipeManagementCommandMixinTest(TestCase):
                     pipelines=[pipeline],
                     execute=True,
                     run_async=True,
+                    stdout=out,
                 )
+        self.assertIn(
+            "Project other_project created with work directory", out.getvalue()
+        )
