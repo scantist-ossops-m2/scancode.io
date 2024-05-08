@@ -3499,11 +3499,8 @@ class DiscoveredDependency(
 
 
 class WebhookSubscription(UUIDPKModel, ProjectRelatedModel):
-    target_url = models.URLField(_("Target URL"), max_length=1024)
+    target_url = models.URLField(_("Target URL"), max_length=1024, blank=False)
     created_date = models.DateTimeField(auto_now_add=True, editable=False)
-    response_status_code = models.PositiveIntegerField(null=True, blank=True)
-    response_text = models.TextField(blank=True)
-    delivery_error = models.TextField(blank=True)
 
     def __str__(self):
         return str(self.uuid)
@@ -3523,34 +3520,51 @@ class WebhookSubscription(UUIDPKModel, ProjectRelatedModel):
             },
         }
 
-    def deliver(self, pipeline_run):
+    def deliver(self, pipeline_run, timeout=10):
         """Deliver this Webhook by sending a POST request to the `target_url`."""
+        delivery = WebhookDelivery.objects.create(webhook_subscription=self)
         payload = self.get_payload(pipeline_run)
 
-        logger.info(f"Sending Webhook uuid={self.uuid}.")
+        logger.info(f"Posting Webhook uuid={self.uuid}.")
         try:
             response = requests.post(
                 url=self.target_url,
                 data=json.dumps(payload, cls=DjangoJSONEncoder),
                 headers={"Content-Type": "application/json"},
-                timeout=10,
+                timeout=timeout,
             )
         except requests.exceptions.RequestException as exception:
             logger.info(exception)
-            self.update(delivery_error=str(exception))
+            delivery.update(delivery_error=str(exception))
             return False
 
-        self.update(
+        delivery.update(
             response_status_code=response.status_code,
             response_text=response.text,
         )
 
-        if self.success:
-            logger.info(f"Webhook uuid={self.uuid} delivered and received.")
+        if delivery.success:
+            logger.info(f"Webhook uuid={self.uuid} delivered successfully.")
         else:
             logger.info(f"Webhook uuid={self.uuid} returned a {response.status_code}.")
 
         return True
+
+
+class WebhookDelivery(UUIDPKModel, ProjectRelatedModel):
+    webhook_subscription = models.ForeignKey(
+        WebhookSubscription,
+        related_name="deliveries",
+        on_delete=models.CASCADE,
+    )
+    sent_date = models.DateTimeField(auto_now_add=True, editable=False)
+    payload = models.JSONField()
+    response_status_code = models.PositiveIntegerField(null=True, blank=True)
+    response_text = models.TextField(blank=True)
+    delivery_error = models.TextField(blank=True)
+
+    def __str__(self):
+        return f"Webhook uuid={self.uuid} posted at {self.sent_date}"
 
     @property
     def delivered(self):
