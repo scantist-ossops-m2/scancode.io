@@ -132,6 +132,33 @@
               </div>
             </div>
 
+            <div class="panel">
+              <p id="webhooks" class="panel-heading py-2 is-size-6">Webhooks</p>
+              <div class="panel-block is-block px-4">
+                <p class="help">
+                  Webhooks enable instant communication between applications by automatically
+                  sending notifications or data to other services when specific events happen.<br>
+                  They work by sending HTTP POST requests to provided URLs, allowing seamless
+                  integration and automation across different systems.<br>
+                  <strong>
+                    Webhooks will be triggered upon pipeline completion, regardless of
+                    whether it was successful or failed.
+                  </strong>
+                </p>
+
+                <div class="mt-3">
+                  {% for webhook in project.webhooksubscriptions.all %}
+                    {% if forloop.first %}Active webhooks:{% endif %}
+                    <span class="panel-block">
+                      {{ webhook.target_url }}
+                    </span>
+                  {% endfor %}
+                </div>
+
+                <a href="#" class="button is-link is-small mt-2">Add Webhook</a>
+              </div>
+            </div>
+
             <div class="columns mt-4 mb-5 is-variable is-1">
               <div class="column is-one-third">
                 <a href="{% url 'project_detail' project.slug %}" class="button is-fullwidth">Cancel</a>
