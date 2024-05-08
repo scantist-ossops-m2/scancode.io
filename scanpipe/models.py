@@ -760,9 +760,22 @@ class Project(UUIDPKModel, ExtraDataFieldMixin, UpdateMixin, models.Model):
         if config_file.exists():
             return config_file
 
+    def get_combined_settings(self):
+        """
+        Combine the local ``settings`` field values with settings stored in other
+        places, such as the webhook subscriptions.
+        """
+        combined_settings = dict(self.settings)
+
+        webhooks = [webhook.target_url for webhook in self.webhooksubscriptions.all()]
+        if webhooks:
+            combined_settings["webhook_subscriptions"] = webhooks
+
+        return saneyaml.dump(combined_settings)
+
     def get_settings_as_yml(self):
         """Return the ``settings`` file content as yml, suitable for a config file."""
-        return saneyaml.dump(self.settings)
+        return saneyaml.dump(self.get_combined_settings())
 
     def get_enabled_settings(self):
         """Return the enabled settings with non-empty values."""
