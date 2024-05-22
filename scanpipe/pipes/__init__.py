@@ -220,6 +220,7 @@ def update_or_create_dependency(
     project,
     dependency_data,
     for_package=None,
+    resolved_to=None,
     datafile_resource=None,
     datasource_id=None,
     strip_datafile_path_root=False,
@@ -235,24 +236,35 @@ def update_or_create_dependency(
     corresponding CodebaseResource for `datafile_path`. This is used in the case
     where Dependency data is imported from a scancode-toolkit scan, where the
     root path segments are not stripped for `datafile_path`.
+    If the dependency is resolved and a resolved package is created, we have the
+    corresponsing package_uid at `resolved_to`.
     """
     dependency = None
     dependency_uid = dependency_data.get("dependency_uid")
 
     if not dependency_uid:
-        dependency_data["dependency_uid"] = uuid.uuid4()
+        purl_data = DiscoveredDependency.extract_purl_data(dependency_data)
+        dependency = DiscoveredDependency.objects.get_or_none(
+            project=project,
+            **purl_data,
+        )
     else:
-        dependency = project.discovereddependencies.get_or_none(
+        dependency = DiscoveredDependency.objects.get_or_none(
+            project=project,
             dependency_uid=dependency_uid,
         )
 
     if dependency:
         dependency.update_from_data(dependency_data)
+        if resolved_to and not dependency.resolved_to:
+            dependency.update(resolved_to=resolved_to)
     else:
+        DiscoveredDependency.populate_dependency_uuid(dependency_data)
         dependency = DiscoveredDependency.create_from_data(
             project,
             dependency_data,
             for_package=for_package,
+            resolved_to=resolved_to,
             datafile_resource=datafile_resource,
             datasource_id=datasource_id,
             strip_datafile_path_root=strip_datafile_path_root,

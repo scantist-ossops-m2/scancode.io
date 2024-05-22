@@ -3425,6 +3425,7 @@ class DiscoveredDependency(
         project,
         dependency_data,
         for_package=None,
+        resolved_to=None,
         datafile_resource=None,
         datasource_id=None,
         strip_datafile_path_root=False,
@@ -3464,6 +3465,13 @@ class DiscoveredDependency(
                     package_uid=for_package_uid
                 )
 
+        if not resolved_to:
+            resolved_to_uid = dependency_data.get("resolved_to_uid")
+            if resolved_to_uid:
+                resolved_to = project.discoveredpackages.get(
+                    package_uid=resolved_to_uid
+                )
+
         if not datafile_resource:
             datafile_path = dependency_data.get("datafile_path")
             if datafile_path:
@@ -3489,9 +3497,31 @@ class DiscoveredDependency(
         return cls.objects.create(
             project=project,
             for_package=for_package,
+            resolved_to=resolved_to,
             datafile_resource=datafile_resource,
             **cleaned_data,
         )
+
+    @classmethod
+    def extract_purl_data(cls, dependency_data):
+        purl_mapping = PackageURL.from_string(
+            purl=dependency_data.get("purl"),
+        ).to_dict()
+        purl_data = {}
+
+        for field_name in PURL_FIELDS:
+            value = purl_mapping.get(field_name)
+            if field_name == "qualifiers":
+                value = normalize_qualifiers(value, encode=True)
+            purl_data[field_name] = value or ""
+
+        return purl_data
+
+    @classmethod
+    def populate_dependency_uuid(cls, dependency_data):
+        purl = PackageURL.from_string(purl=dependency_data.get("purl"))
+        purl.qualifiers["uuid"] = str(uuid.uuid4())
+        dependency_data["dependency_uid"] = purl.to_string()
 
     @property
     def spdx_id(self):
